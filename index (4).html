@@ -210,7 +210,6 @@
       display:block;
       padding:0;
       background:transparent;
-      cursor:zoom-in;
     }
 
     .note-meta{
@@ -724,73 +723,6 @@
       background:linear-gradient(180deg,#ffb6d8,#fda7cc);
       color:#6a2546;
       border-color:#f192bf;
-    }
-
-
-    [data-theme="dark"] .calendar-btn{
-      background:linear-gradient(180deg,#5b3d49,#7b5464);
-      color:#ffe7f1;
-      border:1px solid rgba(255,255,255,0.2);
-    }
-
-    [data-theme="dark"] .calendar-day{
-      background:linear-gradient(180deg,#2f2a2e,#262226);
-      border-color:#51464d;
-      color:#f5f5f5;
-    }
-
-    [data-theme="dark"] .calendar-day.active{
-      background:linear-gradient(180deg,#a56d82,#8f5f72);
-      color:#fff;
-      border-color:#bc8ea0;
-    }
-
-    .editor-modal{
-      max-width:940px;
-      max-height:92vh;
-      overflow:auto;
-      transition:max-width .2s ease;
-    }
-
-    .editor-modal.fullscreen{
-      width:96vw;
-      max-width:96vw;
-      height:94vh;
-      max-height:94vh;
-    }
-
-    .auth-overlay{
-      position:fixed;
-      inset:0;
-      z-index:500;
-      background:linear-gradient(135deg,#e8cfd2,#dea5be);
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding:20px;
-    }
-
-    .auth-card{
-      width:min(92vw,430px);
-      background:rgba(219,151,180,0.78);
-      border-radius:18px;
-      padding:28px;
-      color:#fff;
-      box-shadow:0 20px 55px rgba(0,0,0,0.2);
-    }
-
-    .auth-card h1{font-family:Georgia,serif;text-align:center;margin:0 0 10px;}
-    .auth-card p{text-align:center;color:#ffeaf2;}
-    .auth-card label{display:block;font-weight:700;font-size:12px;letter-spacing:1px;margin:14px 0 6px;}
-    .auth-card input{width:100%;padding:12px;border:1px solid #84606f;border-radius:8px;}
-    .auth-card #toggleAuthMode{background:none;border:none;color:#fff;font-weight:700;cursor:pointer;text-decoration:underline;}
-    .auth-card #authSubmit{margin-top:20px;width:100%;padding:12px;border:none;border-radius:8px;background:#be7899;color:#fff;font-size:26px;cursor:pointer;}
-
-    body.auth-locked header,
-    body.auth-locked main,
-    body.auth-locked footer,
-    body.auth-locked #fab{
-      display:none;
     }
 
     .image-controls{
@@ -1312,7 +1244,7 @@
     }
   </style>
 </head>
-<body class="auth-locked">
+<body>
   <header>
     <div class="logo-area">
       <img src="logodn.index.png" alt="Logo" class="logo-img" />
@@ -1330,7 +1262,6 @@
       <button class="btn" id="openQuickAdd">+ Agregar Nota</button>
       <button class="btn" id="exportBtn">Exportar</button>
       <button class="btn calendar-btn" id="calendarBtn">📅 Calendario</button>
-      <button class="btn" id="openSettingsBtn">⚙️ Configuración</button>
 
       <label class="btn" id="importLabel">
         Importar
@@ -1396,7 +1327,7 @@
 
   <!-- Overlay para editor de notas -->
   <div class="overlay" id="overlayEditor">
-    <div class="modal editor-modal" id="editorModal">
+    <div class="modal" style="max-width:940px">
       <input id="noteTitle" class="title-input" placeholder="Título (opcional)" />
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <div class="toolbar">
@@ -1464,7 +1395,6 @@
         </label>
         <div style="margin-left:auto;display:flex;gap:8px">
           <button id="deleteNoteBtn" style="background:#f88;border-radius:8px;padding:8px;border:none;color:#fff;display:none">Eliminar</button>
-          <button id="fullscreenEditorBtn" class="btn" style="background:#e7d5dc">⛶ Pantalla completa</button>
           <button id="closeEditor" class="btn" style="background:#ddd">Cerrar</button>
           <button id="saveNote" class="btn">Guardar</button>
         </div>
@@ -1674,51 +1604,6 @@
     </div>
   </div>
 
-  <div class="overlay" id="overlayTemplatePreview">
-    <div class="modal" style="max-width:860px">
-      <h3 style="margin-top:0">Vista de plantilla</h3>
-      <img id="templatePreviewImage" alt="Plantilla ampliada" style="width:100%;max-height:65vh;object-fit:contain;border-radius:12px;border:1px solid var(--border)">
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
-        <button id="templatePreviewClose" class="btn" style="background:#ddd">Cerrar</button>
-        <button id="templatePreviewEdit" class="btn">Editar en pantalla completa</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="overlay" id="overlaySettings">
-    <div class="modal" style="max-width:460px">
-      <h3 style="margin-top:0">Configuración de cuenta</h3>
-      <p id="settingsUserName" style="margin:0 0 6px"></p>
-      <p id="settingsUserEmail" style="margin:0 0 6px"></p>
-      <p id="settingsUserBirth" style="margin:0 0 16px"></p>
-      <div style="display:flex;justify-content:flex-end;gap:8px">
-        <button id="closeSettingsBtn" class="btn" style="background:#ddd">Cerrar</button>
-        <button id="logoutBtn" class="btn">Cerrar sesión</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="auth-overlay" id="authOverlay">
-    <div class="auth-card">
-      <h1 id="authTitle">Crea una cuenta</h1>
-      <p><span id="authPrompt">¿Ya estás registrado/a?</span> <button id="toggleAuthMode" type="button">Inicia sesión</button></p>
-      <label>NOMBRE
-        <input id="authName" type="text" placeholder="Tu nombre">
-      </label>
-      <label>EMAIL
-        <input id="authEmail" type="email" placeholder="tu@email.com">
-      </label>
-      <label>CONTRASEÑA
-        <input id="authPassword" type="password" placeholder="******">
-      </label>
-      <label>FECHA DE NACIMIENTO
-        <input id="authBirth" type="date">
-      </label>
-      <button id="authSubmit" type="button">Registrarse</button>
-      <p id="authMessage" style="min-height:24px;margin:12px 0 0;color:#fff;font-weight:700"></p>
-    </div>
-  </div>
-
   <div class="icon-btn" id="fab" title="Agregar nota">
     <img src="logodn.index.png" alt="Digital Notes" style="width:36px;height:36px;object-fit:contain;border-radius:8px">
   </div>
@@ -1743,8 +1628,6 @@
     const STORAGE_KEY = 'digitalNotesData_v7';
     const ONBOARDING_KEY = 'digitalNotesOnboarding_v1';
     const CALENDAR_STABLE_KEY = 'digitalNotesCalendarStable_v1';
-    const AUTH_USERS_KEY = 'digitalNotesUsers_v1';
-    const AUTH_SESSION_KEY = 'digitalNotesSession_v1';
     let state = { notebooks: [], notes: [], darkMode: false };
     const uid = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
     const qs = s => document.querySelector(s);
@@ -1768,83 +1651,6 @@
       { src:'plantilla4.png', name:'Plantilla 4' },
       { src:'plantilla5.png', name:'Plantilla 5' }
     ];
-
-
-    let authMode = 'register';
-    let currentUser = null;
-    let lastManualSavedSnapshot = '';
-    let saveStatusTimer = null;
-
-    function readUsers(){
-      try { return JSON.parse(localStorage.getItem(AUTH_USERS_KEY) || '[]'); } catch(_e){ return []; }
-    }
-    function writeUsers(users){ localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(users)); }
-    function getSession(){
-      try { return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch(_e){ return null; }
-    }
-    function setSession(user){
-      currentUser = user;
-      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(user));
-      document.body.classList.remove('auth-locked');
-      qs('#authOverlay').style.display = 'none';
-      qs('.logo-text').textContent = `Digital Notes 2026 · ${user.name}`;
-      updateSettingsPanel();
-    }
-    function clearSession(){
-      currentUser = null;
-      localStorage.removeItem(AUTH_SESSION_KEY);
-      document.body.classList.add('auth-locked');
-      qs('#authOverlay').style.display = 'flex';
-    }
-
-    function updateAuthMode(){
-      const register = authMode === 'register';
-      qs('#authTitle').textContent = register ? 'Crea una cuenta' : 'Inicia sesión';
-      qs('#authPrompt').textContent = register ? '¿Ya estás registrado/a?' : '¿Aún no tienes cuenta?';
-      qs('#toggleAuthMode').textContent = register ? 'Inicia sesión' : 'Regístrate';
-      qs('#authSubmit').textContent = register ? 'Registrarse' : 'Entrar';
-      qs('#authName').parentElement.style.display = register ? 'block' : 'none';
-      qs('#authBirth').parentElement.style.display = register ? 'block' : 'none';
-      qs('#authMessage').textContent = '';
-    }
-
-    function submitAuth(){
-      const users = readUsers();
-      const name = qs('#authName').value.trim();
-      const email = qs('#authEmail').value.trim().toLowerCase();
-      const password = qs('#authPassword').value;
-      const birth = qs('#authBirth').value;
-      const msg = qs('#authMessage');
-      if(!email || !password){ msg.textContent = 'Email y contraseña son obligatorios.'; return; }
-      if(authMode === 'register'){
-        if(!name || !birth){ msg.textContent = 'Completa nombre y fecha de nacimiento.'; return; }
-        if(users.some(u=>u.email===email)){ msg.textContent = 'Ese email ya está registrado.'; return; }
-        const user = {id:uid(), name, email, password, birth};
-        users.push(user);
-        writeUsers(users);
-        setSession({id:user.id,name:user.name,email:user.email,birth:user.birth});
-      } else {
-        const user = users.find(u=>u.email===email && u.password===password);
-        if(!user){ msg.textContent = 'Credenciales inválidas.'; return; }
-        setSession({id:user.id,name:user.name,email:user.email,birth:user.birth});
-      }
-      msg.textContent = '';
-    }
-
-    function bootstrapAuth(){
-      updateAuthMode();
-      qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
-      qs('#authSubmit').addEventListener('click', submitAuth);
-      const session = getSession();
-      if(session){ setSession(session); }
-    }
-
-    function updateSettingsPanel(){
-      if(!currentUser) return;
-      qs('#settingsUserName').textContent = `Nombre: ${currentUser.name}`;
-      qs('#settingsUserEmail').textContent = `Email: ${currentUser.email}`;
-      qs('#settingsUserBirth').textContent = `Nacimiento: ${currentUser.birth || 'No definido'}`;
-    }
 
     // --- Storage ---
     function loadState(){
@@ -2154,14 +1960,6 @@
       setupAutosave();
       qs('#imageControls').style.display = 'none';
       currentImage = null;
-      const noteTitle = note?.title || '';
-      const noteContent = note?.content || '';
-      const noteNotebook = note?.notebook || (state.notebooks[0]?.id || '');
-      lastManualSavedSnapshot = `${noteTitle}::${noteContent}::${noteNotebook}`;
-      qs('#saveNote').textContent = 'Guardar';
-      qs('#saveNote').classList.remove('saving','saved');
-      qs('#editorModal').classList.remove('fullscreen');
-      qs('#fullscreenEditorBtn').textContent = '⛶ Pantalla completa';
       // set current colors preview
       if(note){
         if(note.bgColor) qs('#colorPreview').style.background = note.bgColor;
@@ -2180,18 +1978,8 @@
     }
 
     qs('#saveNote').addEventListener('click', ()=>{
-      const title = qs('#noteTitle').value;
-      const content = qs('#editor').innerHTML;
-      const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
-      const snapshot = `${title}::${content}::${notebook}`;
-      if(snapshot === lastManualSavedSnapshot){
-        animateSaveButton('Esta nota ya está guardada', true);
-        return;
-      }
-      animateSaveButton('Guardando...');
-      saveCurrentNote({shouldClose:false});
-      lastManualSavedSnapshot = snapshot;
-      animateSaveButton('Guardado ✓');
+      animateSaveButton();
+      saveCurrentNote({shouldClose:true});
     });
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
     qs('#deleteNoteBtn').addEventListener('click', ()=>{
@@ -2294,19 +2082,20 @@
       }
     }
 
-    function animateSaveButton(message='Guardado ✓', keep=false){
+    function animateSaveButton(){
       const btn = qs('#saveNote');
-      clearTimeout(saveStatusTimer);
-      btn.classList.remove('saving');
-      if(message.includes('Guardando')) btn.classList.add('saving');
-      else btn.classList.add('saved');
-      btn.textContent = message;
-      if(!keep){
-        saveStatusTimer = setTimeout(()=>{
-          btn.classList.remove('saving','saved');
-          btn.textContent = 'Guardar';
-        }, 1100);
-      }
+      const original = 'Guardar';
+      btn.classList.add('saving');
+      btn.textContent = 'Guardando...';
+      setTimeout(()=>{
+        btn.classList.remove('saving');
+        btn.classList.add('saved');
+        btn.textContent = 'Guardado ✓';
+        setTimeout(()=>{
+          btn.classList.remove('saved');
+          btn.textContent = original;
+        }, 900);
+      }, 420);
     }
 
     qs('#calendarPrev').addEventListener('click', ()=>{ calendarDate.setMonth(calendarDate.getMonth()-1); renderCalendar(); });
@@ -2540,13 +2329,13 @@
       drawingBoard.style.display = 'none';
     });
 
-    function insertAssetBlock({src, label, width='95%', template=false}){
+    function insertAssetBlock({src, label, width='95%'}){
       qs('#editor').focus();
       const safeLabel = label || 'Elemento';
       insertHtmlAtCursor(`
         <figure class="note-asset-block">
           <figcaption>${safeLabel}</figcaption>
-          <img src="${src}" class="note-img${template ? " template-inline" : ""}" style="width:${width};display:block;margin:0 auto;position:relative;left:0;top:0;" alt="${safeLabel}" />
+          <img src="${src}" class="note-img" style="width:${width};display:block;margin:0 auto;position:relative;left:0;top:0;" alt="${safeLabel}" />
         </figure>
         <p><br></p>
       `);
@@ -2555,7 +2344,7 @@
     qsa('.template-btn').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const src = btn.dataset.template;
-        insertAssetBlock({ src, label:'Plantilla en la nota', width:'96%' , template:true });
+        insertAssetBlock({ src, label:'Plantilla en la nota', width:'96%' });
         saveCurrentNote({shouldClose:false});
         setTemplateSession(false);
       });
@@ -2779,7 +2568,7 @@
         composedCtx.drawImage(baseImage, 0, 0, composedCanvas.width, composedCanvas.height);
         composedCtx.drawImage(templateCanvas, 0, 0, composedCanvas.width, composedCanvas.height);
         const dataUrl = composedCanvas.toDataURL('image/png');
-        insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'96%' , template:true });
+        insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'96%' });
         saveCurrentNote({shouldClose:false});
         overlayTemplateEditor.style.display = 'none';
       };
@@ -2843,13 +2632,6 @@
 
     qs('#editor').addEventListener('click', (e)=>{
       const target = e.target;
-      if(target && target.tagName === 'IMG' && target.classList.contains('template-inline')){
-        e.preventDefault();
-        e.stopPropagation();
-        qs('#templatePreviewImage').src = target.src;
-        qs('#overlayTemplatePreview').style.display = 'flex';
-        return;
-      }
       if(target && target.tagName === 'IMG'){
         qsa('#editor img').forEach(img=>img.classList.remove('selected'));
         target.classList.add('selected');
@@ -2972,31 +2754,6 @@
       saveCurrentNote({shouldClose:false});
     });
 
-
-    qs('#fullscreenEditorBtn').addEventListener('click', ()=>{
-      const modal = qs('#editorModal');
-      modal.classList.toggle('fullscreen');
-      qs('#fullscreenEditorBtn').textContent = modal.classList.contains('fullscreen') ? '🗗 Salir de pantalla completa' : '⛶ Pantalla completa';
-    });
-
-    qs('#templatePreviewClose').addEventListener('click', ()=>qs('#overlayTemplatePreview').style.display='none');
-    qs('#templatePreviewEdit').addEventListener('click', ()=>{
-      qs('#overlayTemplatePreview').style.display='none';
-      const imgSrc = qs('#templatePreviewImage').src;
-      const found = TEMPLATE_ITEMS.find(t=>imgSrc.includes(t.src));
-      openTemplateEditor(found || {name:'Plantilla', src:imgSrc});
-    });
-
-    qs('#openSettingsBtn').addEventListener('click', ()=>{
-      updateSettingsPanel();
-      qs('#overlaySettings').style.display = 'flex';
-    });
-    qs('#closeSettingsBtn').addEventListener('click', ()=>qs('#overlaySettings').style.display='none');
-    qs('#logoutBtn').addEventListener('click', ()=>{
-      qs('#overlaySettings').style.display='none';
-      clearSession();
-    });
-
     // --- Utility: close overlays when clicking outside modal content ---
     document.querySelectorAll('.overlay').forEach(ov=>{
       ov.addEventListener('click', e=>{
@@ -3039,7 +2796,6 @@
       populateEditorNotebook();
       renderCompactPalette();
       maybeShowOnboarding();
-      bootstrapAuth();
 
       qsa('button, .btn, .toolbar button, .icon-btn').forEach(el=>{
         el.addEventListener('click', ()=>animateTap(el));
