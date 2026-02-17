@@ -670,9 +670,9 @@
     }
 
     .calendar-btn{
-      background:linear-gradient(180deg,#ffc2dd,#ff9fca);
-      color:#6a2546;
-      border:1px solid rgba(255,255,255,0.65);
+      background:var(--pink);
+      color:#5a3d4b;
+      border:none;
     }
 
 
@@ -727,12 +727,6 @@
     }
 
 
-    [data-theme="dark"] .calendar-btn{
-      background:linear-gradient(180deg,#5b3d49,#7b5464);
-      color:#ffe7f1;
-      border:1px solid rgba(255,255,255,0.2);
-    }
-
     [data-theme="dark"] .calendar-day{
       background:linear-gradient(180deg,#2f2a2e,#262226);
       border-color:#51464d;
@@ -785,6 +779,40 @@
     .auth-card input{width:100%;padding:12px;border:1px solid #84606f;border-radius:8px;}
     .auth-card #toggleAuthMode{background:none;border:none;color:#fff;font-weight:700;cursor:pointer;text-decoration:underline;}
     .auth-card #authSubmit{margin-top:20px;width:100%;padding:12px;border:none;border-radius:8px;background:#be7899;color:#fff;font-size:26px;cursor:pointer;}
+
+    .export-import-group{
+      display:flex;
+      gap:8px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+
+    .toast-msg{
+      position:fixed;
+      top:18px;
+      right:18px;
+      z-index:900;
+      padding:10px 14px;
+      border-radius:12px;
+      background:linear-gradient(180deg,#ffd9ea,#ffc3dd);
+      color:#6b2b4f;
+      font-weight:700;
+      box-shadow:0 12px 28px rgba(0,0,0,0.2);
+      opacity:0;
+      transform:translateY(-8px);
+      pointer-events:none;
+      transition:opacity .22s ease, transform .22s ease;
+    }
+
+    .toast-msg.show{
+      opacity:1;
+      transform:translateY(0);
+    }
+
+    [data-theme="dark"] .toast-msg{
+      background:linear-gradient(180deg,#6e4b59,#543846);
+      color:#fff;
+    }
 
     body.auth-locked header,
     body.auth-locked main,
@@ -1328,14 +1356,15 @@
       <input class="search" placeholder="Buscar..." id="searchInput" />
 
       <button class="btn" id="openQuickAdd">+ Agregar Nota</button>
-      <button class="btn" id="exportBtn">Exportar</button>
+      <div class="export-import-group">
+        <button class="btn" id="exportBtn">Exportar</button>
+        <label class="btn" id="importLabel">
+          Importar
+          <input type="file" id="importFile" class="file-input" accept="application/json">
+        </label>
+      </div>
       <button class="btn calendar-btn" id="calendarBtn">📅 Calendario</button>
       <button class="btn" id="openSettingsBtn">⚙️ Configuración</button>
-
-      <label class="btn" id="importLabel">
-        Importar
-        <input type="file" id="importFile" class="file-input" accept="application/json">
-      </label>
 
       <button class="btn" id="darkModeBtn">🌙</button>
     </div>
@@ -1719,6 +1748,8 @@
     </div>
   </div>
 
+  <div id="appToast" class="toast-msg" aria-live="polite"></div>
+
   <div class="icon-btn" id="fab" title="Agregar nota">
     <img src="logodn.index.png" alt="Digital Notes" style="width:36px;height:36px;object-fit:contain;border-radius:8px">
   </div>
@@ -1790,6 +1821,28 @@
       qs('.logo-text').textContent = `Digital Notes 2026 · ${user.name}`;
       updateSettingsPanel();
     }
+
+    function getFirstName(name=''){
+      return name.trim().split(/\s+/)[0] || 'usuario';
+    }
+
+    function showToast(message){
+      const toast = qs('#appToast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(()=>toast.classList.remove('show'), 2400);
+    }
+
+    function showWelcomeMessage(user, isNewUser=false){
+      const firstName = getFirstName(user.name);
+      if(isNewUser){
+        showToast('Se ha registrado con éxito');
+        setTimeout(()=>showToast(`Hola, bienvenido ${firstName}`), 300);
+        return;
+      }
+      showToast(`Hola de vuelta ${firstName}`);
+    }
     function clearSession(){
       currentUser = null;
       localStorage.removeItem(AUTH_SESSION_KEY);
@@ -1823,10 +1876,12 @@
         users.push(user);
         writeUsers(users);
         setSession({id:user.id,name:user.name,email:user.email,birth:user.birth});
+        showWelcomeMessage(user, true);
       } else {
         const user = users.find(u=>u.email===email && u.password===password);
         if(!user){ msg.textContent = 'Credenciales inválidas.'; return; }
         setSession({id:user.id,name:user.name,email:user.email,birth:user.birth});
+        showWelcomeMessage(user, false);
       }
       msg.textContent = '';
     }
@@ -1836,7 +1891,7 @@
       qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
       qs('#authSubmit').addEventListener('click', submitAuth);
       const session = getSession();
-      if(session){ setSession(session); }
+      if(session){ setSession(session); showWelcomeMessage(session, false); }
     }
 
     function updateSettingsPanel(){
