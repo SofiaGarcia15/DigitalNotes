@@ -1766,6 +1766,8 @@
     </div>
   </template>
 
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script>
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -1774,8 +1776,14 @@
     const STORAGE_KEY = 'digitalNotesData_v7';
     const ONBOARDING_KEY = 'digitalNotesOnboarding_v1';
     const CALENDAR_STABLE_KEY = 'digitalNotesCalendarStable_v1';
-    const AUTH_USERS_KEY = 'digitalNotesUsers_v1';
+    const AUTH_PROFILES_KEY = 'digitalNotesProfiles_v1';
     const AUTH_SESSION_KEY = 'digitalNotesSession_v1';
+    const FIREBASE_CONFIG = {
+      apiKey: 'REEMPLAZA_CON_TU_API_KEY',
+      authDomain: 'REEMPLAZA_CON_TU_AUTH_DOMAIN',
+      projectId: 'REEMPLAZA_CON_TU_PROJECT_ID',
+      appId: 'REEMPLAZA_CON_TU_APP_ID'
+    };
     let state = { notebooks: [], notes: [], darkMode: false };
     const uid = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
     const qs = s => document.querySelector(s);
@@ -1803,16 +1811,60 @@
 
     let authMode = 'register';
     let currentUser = null;
+    let firebaseAuth = null;
     let lastManualSavedSnapshot = '';
     let saveStatusTimer = null;
 
-    function readUsers(){
-      try { return JSON.parse(localStorage.getItem(AUTH_USERS_KEY) || '[]'); } catch(_e){ return []; }
+    function readProfiles(){
+      try { return JSON.parse(localStorage.getItem(AUTH_PROFILES_KEY) || '[]'); } catch(_e){ return []; }
     }
-    function writeUsers(users){ localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(users)); }
+    function writeProfiles(profiles){ localStorage.setItem(AUTH_PROFILES_KEY, JSON.stringify(profiles)); }
     function getSession(){
       try { return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch(_e){ return null; }
     }
+    function getProfileByUid(userId){
+      return readProfiles().find(profile=>profile.id===userId) || null;
+    }
+    function upsertProfile(profile){
+      const profiles = readProfiles();
+      const index = profiles.findIndex(item=>item.id===profile.id);
+      if(index >= 0) profiles[index] = { ...profiles[index], ...profile };
+      else profiles.push(profile);
+      writeProfiles(profiles);
+      return profile;
+    }
+
+    function isFirebaseConfigured(){
+      return !Object.values(FIREBASE_CONFIG).some(value=>!value || value.includes('REEMPLAZA_CON_TU'));
+    }
+
+    function getFirebaseAuthInstance(){
+      if(firebaseAuth) return firebaseAuth;
+      if(typeof firebase === 'undefined') throw new Error('Firebase no está disponible.');
+      if(!isFirebaseConfigured()) throw new Error('Configura FIREBASE_CONFIG con los datos de tu proyecto Firebase.');
+      if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+      firebaseAuth = firebase.auth();
+      return firebaseAuth;
+    }
+
+    function mapFirebaseError(error){
+      const code = error?.code || '';
+      const customMessage = error?.message || 'Ocurrió un error inesperado.';
+      const map = {
+        'auth/email-already-in-use': 'Ese correo ya está registrado.',
+        'auth/invalid-email': 'El correo no es válido.',
+        'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres.',
+        'auth/missing-password': 'Ingresa una contraseña.',
+        'auth/invalid-credential': 'Correo o contraseña incorrectos.',
+        'auth/wrong-password': 'Correo o contraseña incorrectos.',
+        'auth/user-not-found': 'No existe una cuenta con ese correo.',
+        'auth/too-many-requests': 'Demasiados intentos. Intenta de nuevo más tarde.',
+        'auth/network-request-failed': 'Error de red. Verifica tu conexión.',
+        'auth/configuration-not-found': 'La autenticación de correo/contraseña no está habilitada en Firebase.'
+      };
+      return map[code] || customMessage;
+    }
+
     function setSession(user){
       currentUser = user;
       localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(user));
@@ -1843,11 +1895,20 @@
       }
       showToast(`Hola de vuelta ${firstName}`);
     }
-    function clearSession(){
+    async function clearSession(options = {}){
+      const { skipFirebaseSignOut = false, silent = false } = options;
+      if(!skipFirebaseSignOut){
+        try {
+          const auth = getFirebaseAuthInstance();
+          if(auth.currentUser) await auth.signOut();
+        } catch(_e){}
+      }
       currentUser = null;
       localStorage.removeItem(AUTH_SESSION_KEY);
       document.body.classList.add('auth-locked');
       qs('#authOverlay').style.display = 'flex';
+      if(!silent) showToast('Sesión cerrada');
+      qs('.logo-text').textContent = 'Digital Notes 2026';
     }
 
     function updateAuthMode(){
@@ -1861,37 +1922,80 @@
       qs('#authMessage').textContent = '';
     }
 
-    function submitAuth(){
-      const users = readUsers();
+    async function submitAuth(){
       const name = qs('#authName').value.trim();
       const email = qs('#authEmail').value.trim().toLowerCase();
       const password = qs('#authPassword').value;
       const birth = qs('#authBirth').value;
       const msg = qs('#authMessage');
+      const submitBtn = qs('#authSubmit');
       if(!email || !password){ msg.textContent = 'Email y contraseña son obligatorios.'; return; }
-      if(authMode === 'register'){
-        if(!name || !birth){ msg.textContent = 'Completa nombre y fecha de nacimiento.'; return; }
-        if(users.some(u=>u.email===email)){ msg.textContent = 'Ese email ya está registrado.'; return; }
-        const user = {id:uid(), name, email, password, birth};
-        users.push(user);
-        writeUsers(users);
-        setSession({id:user.id,name:user.name,email:user.email,birth:user.birth});
-        showWelcomeMessage(user, true);
-      } else {
-        const user = users.find(u=>u.email===email && u.password===password);
-        if(!user){ msg.textContent = 'Credenciales inválidas.'; return; }
-        setSession({id:user.id,name:user.name,email:user.email,birth:user.birth});
-        showWelcomeMessage(user, false);
+      submitBtn.disabled = true;
+      try {
+        const auth = getFirebaseAuthInstance();
+        if(authMode === 'register'){
+          if(!name || !birth){ msg.textContent = 'Completa nombre y fecha de nacimiento.'; return; }
+          const credential = await auth.createUserWithEmailAndPassword(email, password);
+          const firebaseUser = credential.user;
+          await firebaseUser.updateProfile({ displayName: name });
+          const user = upsertProfile({
+            id: firebaseUser.uid,
+            name,
+            email: firebaseUser.email || email,
+            birth
+          });
+          setSession(user);
+          showWelcomeMessage(user, true);
+        } else {
+          const credential = await auth.signInWithEmailAndPassword(email, password);
+          const firebaseUser = credential.user;
+          const existingProfile = getProfileByUid(firebaseUser.uid);
+          const user = upsertProfile({
+            id: firebaseUser.uid,
+            name: firebaseUser.displayName || existingProfile?.name || email.split('@')[0],
+            email: firebaseUser.email || email,
+            birth: existingProfile?.birth || ''
+          });
+          setSession(user);
+          showWelcomeMessage(user, false);
+        }
+        msg.textContent = '';
+      } catch(error){
+        msg.textContent = mapFirebaseError(error);
+      } finally {
+        submitBtn.disabled = false;
       }
-      msg.textContent = '';
+    }
+
+    async function syncSessionFromFirebaseUser(firebaseUser, options = {}){
+      const { silent = true } = options;
+      if(!firebaseUser){
+        if(currentUser) await clearSession({ skipFirebaseSignOut:true, silent:true });
+        return;
+      }
+      const existingProfile = getProfileByUid(firebaseUser.uid);
+      const user = upsertProfile({
+        id: firebaseUser.uid,
+        name: firebaseUser.displayName || existingProfile?.name || firebaseUser.email?.split('@')[0] || 'Usuario',
+        email: firebaseUser.email || existingProfile?.email || '',
+        birth: existingProfile?.birth || ''
+      });
+      setSession(user);
+      if(!silent) showWelcomeMessage(user, false);
     }
 
     function bootstrapAuth(){
       updateAuthMode();
       qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
       qs('#authSubmit').addEventListener('click', submitAuth);
-      const session = getSession();
-      if(session){ setSession(session); showWelcomeMessage(session, false); }
+      try {
+        const auth = getFirebaseAuthInstance();
+        auth.onAuthStateChanged(user=>{ syncSessionFromFirebaseUser(user); });
+      } catch(error){
+        qs('#authMessage').textContent = mapFirebaseError(error);
+        const session = getSession();
+        if(session){ setSession(session); showWelcomeMessage(session, false); }
+      }
     }
 
     function updateSettingsPanel(){
@@ -3047,9 +3151,9 @@
       qs('#overlaySettings').style.display = 'flex';
     });
     qs('#closeSettingsBtn').addEventListener('click', ()=>qs('#overlaySettings').style.display='none');
-    qs('#logoutBtn').addEventListener('click', ()=>{
+    qs('#logoutBtn').addEventListener('click', async ()=>{
       qs('#overlaySettings').style.display='none';
-      clearSession();
+      await clearSession();
     });
 
     // --- Utility: close overlays when clicking outside modal content ---
