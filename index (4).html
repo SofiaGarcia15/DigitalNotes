@@ -1768,6 +1768,7 @@
 
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
   <script>
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -1938,7 +1939,17 @@
         const auth = getFirebaseAuthInstance();
         if(authMode === 'register'){
           if(!name || !birth){ msg.textContent = 'Completa nombre y fecha de nacimiento.'; return; }
-          const credential = await auth.createUserWithEmailAndPassword(email, password);
+          const credential = await auth.createUserWithEmailAndPassword(email, password)
+            .then((userCredential) => {
+              const user = userCredential.user;
+
+              return firebase.firestore().collection('users').doc(user.uid).set({
+                email: user.email,
+                nombre: name,
+                fechaNacimiento: birth,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+              }).then(() => userCredential);
+            });
           const firebaseUser = credential.user;
           await firebaseUser.updateProfile({ displayName: name });
           const user = upsertProfile({
