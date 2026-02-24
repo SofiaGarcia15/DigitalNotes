@@ -778,7 +778,7 @@
     .auth-card label{display:block;font-weight:700;font-size:12px;letter-spacing:1px;margin:14px 0 6px;}
     .auth-card input{width:100%;padding:12px;border:1px solid #84606f;border-radius:8px;}
     .auth-card #toggleAuthMode{background:none;border:none;color:#fff;font-weight:700;cursor:pointer;text-decoration:underline;}
-    .auth-card #authSubmit{margin-top:20px;width:100%;padding:12px;border:none;border-radius:8px;background:#be7899;color:#fff;font-size:26px;cursor:pointer;}
+    .auth-card #registerBtn{margin-top:20px;width:100%;padding:12px;border:none;border-radius:8px;background:#be7899;color:#fff;font-size:26px;cursor:pointer;}
 
     .export-import-group{
       display:flex;
@@ -1736,15 +1736,15 @@
           <input id="authName" type="text" placeholder="Tu nombre">
         </label>
         <label>EMAIL
-          <input id="authEmail" type="email" placeholder="tu@email.com">
+          <input id="email" type="email" placeholder="tu@email.com">
         </label>
         <label>CONTRASEÑA
-          <input id="authPassword" type="password" placeholder="******">
+          <input id="password" type="password" placeholder="******">
         </label>
         <label>FECHA DE NACIMIENTO
-          <input id="authBirth" type="date">
+          <input id="birthdate" type="date">
         </label>
-        <button id="authSubmit" type="submit">Registrarse</button>
+        <button id="registerBtn" type="button">Registrarse</button>
       </form>
       <p id="authMessage" style="min-height:24px;margin:12px 0 0;color:#fff;font-weight:700"></p>
     </div>
@@ -1768,18 +1768,27 @@
     </div>
   </template>
 
-  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
   <script type="module">
-    import { initializeApp as initializeModularApp, getApps as getModularApps, getApp as getModularApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
-    import { getFirestore, doc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+    import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+    import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getFirestore, setDoc, doc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     window.modularFirestoreHelpers = {
+      getFirebaseApp(config){
+        return getApps().length ? getApp() : initializeApp(config);
+      },
+      getAuthInstance(config){
+        return getAuth(this.getFirebaseApp(config));
+      },
       getFirestoreDb(config){
-        const app = getModularApps().length ? getModularApp() : initializeModularApp(config);
+        const app = this.getFirebaseApp(config);
         return getFirestore(app);
       },
+      createUserWithEmailAndPassword,
+      signInWithEmailAndPassword,
+      updateProfile,
+      onAuthStateChanged,
+      signOut,
       doc,
       setDoc,
       serverTimestamp
@@ -1861,10 +1870,10 @@
 
     function getFirebaseAuthInstance(){
       if(firebaseAuth) return firebaseAuth;
-      if(typeof firebase === 'undefined') throw new Error('Firebase no está disponible.');
       if(!isFirebaseConfigured()) throw new Error('Configura FIREBASE_CONFIG con los datos de tu proyecto Firebase.');
-      if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-      firebaseAuth = firebase.auth();
+      const helpers = window.modularFirestoreHelpers;
+      if(!helpers) throw new Error('Firebase modular no está disponible.');
+      firebaseAuth = helpers.getAuthInstance(FIREBASE_CONFIG);
       return firebaseAuth;
     }
 
@@ -1882,7 +1891,8 @@
       const map = {
         'auth/email-already-in-use': 'Ese correo ya está registrado.',
         'auth/invalid-email': 'El correo no es válido.',
-        'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres.',
+        'auth/missing-email': 'Falta completar algún campo obligatorio.',
+        'auth/weak-password': 'La contraseña es muy débil. Debe tener al menos 6 caracteres.',
         'auth/missing-password': 'Ingresa una contraseña.',
         'auth/invalid-credential': 'Correo o contraseña incorrectos.',
         'auth/wrong-password': 'Correo o contraseña incorrectos.',
@@ -1929,7 +1939,7 @@
       if(!skipFirebaseSignOut){
         try {
           const auth = getFirebaseAuthInstance();
-          if(auth.currentUser) await auth.signOut();
+          if(auth.currentUser){ const { signOut } = window.modularFirestoreHelpers; await signOut(auth); }
         } catch(_e){}
       }
       currentUser = null;
@@ -1945,47 +1955,48 @@
       qs('#authTitle').textContent = register ? 'Crea una cuenta' : 'Inicia sesión';
       qs('#authPrompt').textContent = register ? '¿Ya estás registrado/a?' : '¿Aún no tienes cuenta?';
       qs('#toggleAuthMode').textContent = register ? 'Inicia sesión' : 'Regístrate';
-      qs('#authSubmit').textContent = register ? 'Registrarse' : 'Entrar';
+      qs('#registerBtn').textContent = register ? 'Registrarse' : 'Entrar';
       qs('#authName').parentElement.style.display = register ? 'block' : 'none';
-      qs('#authBirth').parentElement.style.display = register ? 'block' : 'none';
+      qs('#birthdate').parentElement.style.display = register ? 'block' : 'none';
       qs('#authMessage').textContent = '';
     }
 
     async function submitAuth(event){
       event?.preventDefault();
       const name = qs('#authName').value.trim();
-      const email = qs('#authEmail').value.trim().toLowerCase();
-      const password = qs('#authPassword').value;
-      const birth = qs('#authBirth').value;
+      const email = qs('#email').value.trim().toLowerCase();
+      const password = qs('#password').value;
+      const birth = qs('#birthdate').value;
       const msg = qs('#authMessage');
-      const submitBtn = qs('#authSubmit');
-      if(!email || !password){ msg.textContent = 'Email y contraseña son obligatorios.'; return; }
+      const submitBtn = qs('#registerBtn');
+      if(!email || !password){ msg.textContent = 'Falta completar email y contraseña.'; return; }
       submitBtn.disabled = true;
       try {
         const auth = getFirebaseAuthInstance();
+        const { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } = window.modularFirestoreHelpers;
         if(authMode === 'register'){
-          if(!name || !birth){ msg.textContent = 'Completa nombre y fecha de nacimiento.'; return; }
-          const credential = await auth.createUserWithEmailAndPassword(email, password);
+          if(!birth){ msg.textContent = 'Falta completar algún campo obligatorio.'; return; }
+          const credential = await createUserWithEmailAndPassword(auth, email, password);
           const firestoreDb = getFirebaseFirestoreDb();
           const { doc, setDoc, serverTimestamp } = window.modularFirestoreHelpers;
-          await setDoc(doc(firestoreDb, 'usuarios', credential.user.uid), {
-            email: credential.user.email,
-            nombre: name,
-            fechaNacimiento: birth,
+          await setDoc(doc(firestoreDb, 'users', credential.user.uid), {
+            email,
+            birthdate: birth,
             createdAt: serverTimestamp()
           });
           const firebaseUser = credential.user;
-          await firebaseUser.updateProfile({ displayName: name });
+          const profileName = name || email.split('@')[0];
+          await updateProfile(firebaseUser, { displayName: profileName });
           const user = upsertProfile({
             id: firebaseUser.uid,
-            name,
+            name: profileName,
             email: firebaseUser.email || email,
             birth
           });
           setSession(user);
           showWelcomeMessage(user, true);
         } else {
-          const credential = await auth.signInWithEmailAndPassword(email, password);
+          const credential = await signInWithEmailAndPassword(auth, email, password);
           const firebaseUser = credential.user;
           const existingProfile = getProfileByUid(firebaseUser.uid);
           const user = upsertProfile({
@@ -2026,10 +2037,11 @@
     function bootstrapAuth(){
       updateAuthMode();
       qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
-      qs('#authForm').addEventListener('submit', submitAuth);
+      qs('#registerBtn').addEventListener('click', submitAuth);
       try {
         const auth = getFirebaseAuthInstance();
-        auth.onAuthStateChanged(user=>{ syncSessionFromFirebaseUser(user); });
+        const { onAuthStateChanged } = window.modularFirestoreHelpers;
+        onAuthStateChanged(auth, user=>{ syncSessionFromFirebaseUser(user); });
       } catch(error){
         console.error('Error de Firebase en bootstrapAuth:', error);
         qs('#authMessage').textContent = mapFirebaseError(error);
