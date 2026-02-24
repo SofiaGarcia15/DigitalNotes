@@ -1731,19 +1731,21 @@
     <div class="auth-card">
       <h1 id="authTitle">Crea una cuenta</h1>
       <p><span id="authPrompt">¿Ya estás registrado/a?</span> <button id="toggleAuthMode" type="button">Inicia sesión</button></p>
-      <label>NOMBRE
-        <input id="authName" type="text" placeholder="Tu nombre">
-      </label>
-      <label>EMAIL
-        <input id="authEmail" type="email" placeholder="tu@email.com">
-      </label>
-      <label>CONTRASEÑA
-        <input id="authPassword" type="password" placeholder="******">
-      </label>
-      <label>FECHA DE NACIMIENTO
-        <input id="authBirth" type="date">
-      </label>
-      <button id="authSubmit" type="button">Registrarse</button>
+      <form id="authForm">
+        <label>NOMBRE
+          <input id="authName" type="text" placeholder="Tu nombre">
+        </label>
+        <label>EMAIL
+          <input id="authEmail" type="email" placeholder="tu@email.com">
+        </label>
+        <label>CONTRASEÑA
+          <input id="authPassword" type="password" placeholder="******">
+        </label>
+        <label>FECHA DE NACIMIENTO
+          <input id="authBirth" type="date">
+        </label>
+        <button id="authSubmit" type="submit">Registrarse</button>
+      </form>
       <p id="authMessage" style="min-height:24px;margin:12px 0 0;color:#fff;font-weight:700"></p>
     </div>
   </div>
@@ -1769,6 +1771,20 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script type="module">
+    import { initializeApp as initializeModularApp, getApps as getModularApps, getApp as getModularApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
+    import { getFirestore, doc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+
+    window.modularFirestoreHelpers = {
+      getFirestoreDb(config){
+        const app = getModularApps().length ? getModularApp() : initializeModularApp(config);
+        return getFirestore(app);
+      },
+      doc,
+      setDoc,
+      serverTimestamp
+    };
+  </script>
   <script>
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -1816,6 +1832,7 @@
     let authMode = 'register';
     let currentUser = null;
     let firebaseAuth = null;
+    let firebaseFirestoreDb = null;
     let lastManualSavedSnapshot = '';
     let saveStatusTimer = null;
 
@@ -1849,6 +1866,14 @@
       if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
       firebaseAuth = firebase.auth();
       return firebaseAuth;
+    }
+
+    function getFirebaseFirestoreDb(){
+      if(firebaseFirestoreDb) return firebaseFirestoreDb;
+      const helpers = window.modularFirestoreHelpers;
+      if(!helpers) throw new Error('Firestore modular no está disponible.');
+      firebaseFirestoreDb = helpers.getFirestoreDb(FIREBASE_CONFIG);
+      return firebaseFirestoreDb;
     }
 
     function mapFirebaseError(error){
@@ -1926,7 +1951,8 @@
       qs('#authMessage').textContent = '';
     }
 
-    async function submitAuth(){
+    async function submitAuth(event){
+      event?.preventDefault();
       const name = qs('#authName').value.trim();
       const email = qs('#authEmail').value.trim().toLowerCase();
       const password = qs('#authPassword').value;
@@ -1939,17 +1965,15 @@
         const auth = getFirebaseAuthInstance();
         if(authMode === 'register'){
           if(!name || !birth){ msg.textContent = 'Completa nombre y fecha de nacimiento.'; return; }
-          const credential = await auth.createUserWithEmailAndPassword(email, password)
-            .then((userCredential) => {
-              const user = userCredential.user;
-
-              return firebase.firestore().collection('users').doc(user.uid).set({
-                email: user.email,
-                nombre: name,
-                fechaNacimiento: birth,
-                createdAt: firebase.firestore.FieldValue.serverTimestamp()
-              }).then(() => userCredential);
-            });
+          const credential = await auth.createUserWithEmailAndPassword(email, password);
+          const firestoreDb = getFirebaseFirestoreDb();
+          const { doc, setDoc, serverTimestamp } = window.modularFirestoreHelpers;
+          await setDoc(doc(firestoreDb, 'usuarios', credential.user.uid), {
+            email: credential.user.email,
+            nombre: name,
+            fechaNacimiento: birth,
+            createdAt: serverTimestamp()
+          });
           const firebaseUser = credential.user;
           await firebaseUser.updateProfile({ displayName: name });
           const user = upsertProfile({
@@ -1975,6 +1999,7 @@
         }
         msg.textContent = '';
       } catch(error){
+        console.error('Error de Firebase en submitAuth:', error);
         msg.textContent = mapFirebaseError(error);
       } finally {
         submitBtn.disabled = false;
@@ -2001,11 +2026,12 @@
     function bootstrapAuth(){
       updateAuthMode();
       qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
-      qs('#authSubmit').addEventListener('click', submitAuth);
+      qs('#authForm').addEventListener('submit', submitAuth);
       try {
         const auth = getFirebaseAuthInstance();
         auth.onAuthStateChanged(user=>{ syncSessionFromFirebaseUser(user); });
       } catch(error){
+        console.error('Error de Firebase en bootstrapAuth:', error);
         qs('#authMessage').textContent = mapFirebaseError(error);
         const session = getSession();
         if(session){ setSession(session); showWelcomeMessage(session, false); }
