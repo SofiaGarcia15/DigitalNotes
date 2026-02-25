@@ -1769,30 +1769,39 @@
   </template>
 
   <script type="module">
-    import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    window.modularFirestoreHelpersReady = (async ()=>{
+      const { initializeApp, getApps, getApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
+      const { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
+      const { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
 
-    window.modularFirestoreHelpers = {
-      getFirebaseApp(config){
-        return getApps().length ? getApp() : initializeApp(config);
-      },
-      getAuthInstance(config){
-        return getAuth(this.getFirebaseApp(config));
-      },
-      getFirestoreDb(config){
-        const app = this.getFirebaseApp(config);
-        return getFirestore(app);
-      },
-      createUserWithEmailAndPassword,
-      signInWithEmailAndPassword,
-      updateProfile,
-      onAuthStateChanged,
-      signOut,
-      doc,
-      setDoc,
-      serverTimestamp
-    };
+      window.modularFirestoreHelpers = {
+        getFirebaseApp(config){
+          return getApps().length ? getApp() : initializeApp(config);
+        },
+        getAuthInstance(config){
+          return getAuth(this.getFirebaseApp(config));
+        },
+        getFirestoreDb(config){
+          const app = this.getFirebaseApp(config);
+          return getFirestore(app);
+        },
+        createUserWithEmailAndPassword,
+        signInWithEmailAndPassword,
+        updateProfile,
+        onAuthStateChanged,
+        signOut,
+        doc,
+        setDoc,
+        serverTimestamp,
+        collection,
+        query,
+        where,
+        orderBy,
+        onSnapshot,
+        deleteDoc
+      };
+      return window.modularFirestoreHelpers;
+    })();
   </script>
   <script>
     /* ---------------------------
@@ -1842,6 +1851,8 @@
     let currentUser = null;
     let firebaseAuth = null;
     let firebaseFirestoreDb = null;
+    let notesDocUnsubscribe = null;
+    let isApplyingRemoteState = false;
     let lastManualSavedSnapshot = '';
     let saveStatusTimer = null;
 
@@ -1885,6 +1896,78 @@
       return firebaseFirestoreDb;
     }
 
+    function getDefaultState(){
+      return {
+        notebooks:[{id:uid(),name:'General',cover:null,coverColor:'#f08aba'}],
+        notes:[],
+        darkMode:false
+      };
+    }
+
+    function normalizeState(rawState = {}){
+      const nextState = {
+        notebooks: Array.isArray(rawState.notebooks) ? rawState.notebooks : [],
+        notes: Array.isArray(rawState.notes) ? rawState.notes : [],
+        darkMode: Boolean(rawState.darkMode)
+      };
+      if(nextState.notebooks.length === 0){
+        nextState.notebooks = [{id:uid(),name:'General',cover:null,coverColor:'#f08aba'}];
+      }
+      nextState.notebooks = nextState.notebooks.map(nb=>({ coverColor:'#f08aba', ...nb }));
+      nextState.notes = nextState.notes.map(note=>({ created: note.created || note.updated || Date.now(), ...note }));
+      return nextState;
+    }
+
+    function stopNotesSync(){
+      if(typeof notesDocUnsubscribe === 'function'){
+        notesDocUnsubscribe();
+      }
+      notesDocUnsubscribe = null;
+    }
+
+    function applyState(nextState){
+      state = normalizeState(nextState);
+      if(state.darkMode) document.body.setAttribute('data-theme','dark');
+      else document.body.removeAttribute('data-theme');
+      renderNotebooks();
+      renderNotes();
+      refreshNotebookWorkspace();
+      populateEditorNotebook();
+    }
+
+    async function syncStateToFirestore(){
+      if(!currentUser || isApplyingRemoteState) return;
+      try {
+        await window.modularFirestoreHelpersReady;
+        const firestoreDb = getFirebaseFirestoreDb();
+        const { doc, setDoc, serverTimestamp } = window.modularFirestoreHelpers;
+        await setDoc(doc(firestoreDb, 'notes', currentUser.id), {
+          userId: currentUser.id,
+          notebooks: state.notebooks,
+          notes: state.notes,
+          darkMode: state.darkMode,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      } catch(error){
+        console.error('Error guardando notas en Firestore:', error);
+      }
+    }
+
+    function startNotesSync(userId){
+      stopNotesSync();
+      const firestoreDb = getFirebaseFirestoreDb();
+      const { doc, onSnapshot } = window.modularFirestoreHelpers;
+      notesDocUnsubscribe = onSnapshot(doc(firestoreDb, 'notes', userId), snapshot=>{
+        const data = snapshot.data();
+        isApplyingRemoteState = true;
+        applyState(data ? data : getDefaultState());
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        isApplyingRemoteState = false;
+      }, error=>{
+        console.error('Error al sincronizar notas del usuario:', error);
+      });
+    }
+
     function mapFirebaseError(error){
       const code = error?.code || '';
       const customMessage = error?.message || 'Ocurrió un error inesperado.';
@@ -1911,6 +1994,7 @@
       qs('#authOverlay').style.display = 'none';
       qs('.logo-text').textContent = `Digital Notes 2026 · ${user.name}`;
       updateSettingsPanel();
+      startNotesSync(user.id);
     }
 
     function getFirstName(name=''){
@@ -1938,16 +2022,19 @@
       const { skipFirebaseSignOut = false, silent = false } = options;
       if(!skipFirebaseSignOut){
         try {
+        await window.modularFirestoreHelpersReady;
           const auth = getFirebaseAuthInstance();
           if(auth.currentUser){ const { signOut } = window.modularFirestoreHelpers; await signOut(auth); }
         } catch(_e){}
       }
+      stopNotesSync();
       currentUser = null;
       localStorage.removeItem(AUTH_SESSION_KEY);
       document.body.classList.add('auth-locked');
       qs('#authOverlay').style.display = 'flex';
       if(!silent) showToast('Sesión cerrada');
       qs('.logo-text').textContent = 'Digital Notes 2026';
+      applyState(getDefaultState());
     }
 
     function updateAuthMode(){
@@ -1972,6 +2059,7 @@
       if(!email || !password){ msg.textContent = 'Falta completar email y contraseña.'; return; }
       submitBtn.disabled = true;
       try {
+        await window.modularFirestoreHelpersReady;
         const auth = getFirebaseAuthInstance();
         const { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } = window.modularFirestoreHelpers;
         if(authMode === 'register'){
@@ -2034,11 +2122,12 @@
       if(!silent) showWelcomeMessage(user, false);
     }
 
-    function bootstrapAuth(){
+    async function bootstrapAuth(){
       updateAuthMode();
       qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
       qs('#registerBtn').addEventListener('click', submitAuth);
       try {
+        await window.modularFirestoreHelpersReady;
         const auth = getFirebaseAuthInstance();
         const { onAuthStateChanged } = window.modularFirestoreHelpers;
         onAuthStateChanged(auth, user=>{ syncSessionFromFirebaseUser(user); });
@@ -2060,13 +2149,22 @@
     // --- Storage ---
     function loadState(){
       const raw = localStorage.getItem(STORAGE_KEY);
-      if(raw){ try { state = JSON.parse(raw); } catch(e){ state = {notebooks:[],notes:[], darkMode:false}; } }
-      if(!state.notebooks || state.notebooks.length===0){ state.notebooks = [{id:uid(),name:'General',cover:null}]; saveState(); }
-      if(!state.notes) state.notes = [];
-      state.notes = state.notes.map(note=>({created: note.created || note.updated || Date.now(), ...note}));
+      if(!raw){
+        state = getDefaultState();
+        return;
+      }
+      try {
+        state = normalizeState(JSON.parse(raw));
+      } catch(_e){
+        state = getDefaultState();
+      }
       if(state.darkMode) document.body.setAttribute('data-theme','dark');
     }
-    function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+    function saveState(){
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      void syncStateToFirestore();
+    }
 
     // --- Dark mode ---
     function toggleDarkMode(){
@@ -2400,13 +2498,20 @@
         return;
       }
       animateSaveButton('Guardando...');
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
       lastManualSavedSnapshot = snapshot;
       animateSaveButton('Guardado ✓');
     });
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
     qs('#deleteNoteBtn').addEventListener('click', ()=>{
-      if(editingNote && confirm('¿Eliminar nota?')){ state.notes = state.notes.filter(n=>n.id!==editingNote.id); saveState(); renderNotes(); refreshNotebookWorkspace(); closeEditor(); }
+      if(editingNote && confirm('¿Eliminar nota?')){
+        const noteId = editingNote.id;
+        state.notes = state.notes.filter(n=>n.id!==noteId);
+        saveState();
+        renderNotes();
+        refreshNotebookWorkspace();
+        closeEditor();
+      }
     });
 
 
@@ -2527,11 +2632,11 @@
       if(!selectedCalendarDay) return alert('Selecciona una fecha');
       const formatted = selectedCalendarDay.toLocaleDateString(getLocaleTag(), { day:'2-digit', month:'long', year:'numeric' });
       insertHtmlAtCursor(`<p><strong>📅 ${formatted}</strong></p>`);
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
       closeCalendarModal();
     });
 
-    function saveCurrentNote({shouldClose=false} = {}){
+    async function saveCurrentNote({shouldClose=false} = {}){
       const title = qs('#noteTitle').value;
       const content = qs('#editor').innerHTML;
       const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
@@ -2545,7 +2650,7 @@
         state.notes.push(newNote);
         editingNote = newNote;
       }
-      saveState(); renderNotes(); refreshNotebookWorkspace();
+      await saveState(); renderNotes(); refreshNotebookWorkspace();
       if(shouldClose){ editingNote=null; closeEditor(); }
     }
 
@@ -2553,7 +2658,7 @@
       const editor = qs('#editor'); const titleEl = qs('#noteTitle');
       let timer; editor.oninput = titleEl.oninput = ()=>{
         clearTimeout(timer);
-        timer=setTimeout(()=>saveCurrentNote({shouldClose:false}),700);
+        timer=setTimeout(()=>void saveCurrentNote({shouldClose:false}),700);
       };
     }
 
@@ -2634,7 +2739,7 @@
       }
       // apply to editor background for visual feedback
       qs('#editor').style.background = bg;
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
     qs('#textColorTool').addEventListener('click', ()=>{
@@ -2644,7 +2749,7 @@
       const color = e.target.value;
       document.execCommand('foreColor', false, color);
       qs('#editor').focus();
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
     // Quick palette generation
@@ -2667,7 +2772,7 @@
       // insert at caret position in contenteditable
       insertHtmlAtCursor(`<img src="${dataUrl}" class="note-img" style="width:70%;display:block;margin:8px 0;position:relative;left:0px;top:0px;" />`);
       // autosave will pick up changes
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
       e.target.value = '';
     });
 
@@ -2707,7 +2812,7 @@
       const size = step > 0 ? 5 : 2;
       document.execCommand('fontSize', false, size);
       qs('#editor').focus();
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     }
 
     qs('#fontIncrease').addEventListener('click', ()=>changeSelectionFontSize(1));
@@ -2726,7 +2831,7 @@
         sw.addEventListener('click', ()=>{
           qs('#editor').style.background = color;
           if(editingNote) editingNote.bgColor = color;
-          saveCurrentNote({shouldClose:false});
+          void saveCurrentNote({shouldClose:false});
         });
         wrap.appendChild(sw);
       });
@@ -2767,7 +2872,7 @@
       btn.addEventListener('click', ()=>{
         const src = btn.dataset.template;
         insertAssetBlock({ src, label:'Plantilla en la nota', width:'96%' , template:true });
-        saveCurrentNote({shouldClose:false});
+        void saveCurrentNote({shouldClose:false});
         setTemplateSession(false);
       });
     });
@@ -2824,7 +2929,7 @@
     qs('#saveDrawingBtn').addEventListener('click', ()=>{
       const dataUrl = drawCanvas.toDataURL('image/png');
       insertAssetBlock({ src:dataUrl, label:'Dibujo en la nota', width:'90%' });
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
     const drawFullscreenOverlay = qs('#drawFullscreenOverlay');
@@ -2908,7 +3013,7 @@
     qs('#drawFsSave').addEventListener('click', ()=>{
       const dataUrl = drawFsCanvas.toDataURL('image/png');
       insertAssetBlock({ src:dataUrl, label:'Dibujo en pantalla completa', width:'95%' });
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
       closeFullscreenDraw();
     });
 
@@ -2991,7 +3096,7 @@
         composedCtx.drawImage(templateCanvas, 0, 0, composedCanvas.width, composedCanvas.height);
         const dataUrl = composedCanvas.toDataURL('image/png');
         insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'96%' , template:true });
-        saveCurrentNote({shouldClose:false});
+        void saveCurrentNote({shouldClose:false});
         overlayTemplateEditor.style.display = 'none';
       };
       baseImage.src = selectedTemplate;
@@ -3030,7 +3135,7 @@
     qs('#emojiSelect').addEventListener('change', (e)=>{
       if(!e.target.value) return;
       insertHtmlAtCursor(`${e.target.value} `);
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
       e.target.value = '';
     });
 
@@ -3042,7 +3147,7 @@
 
     qs('#insertChecklist').addEventListener('click', ()=>{
       insertHtmlAtCursor(`<div><label><input type="checkbox" /> Tarea</label></div>`);
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
     // --- Image controls ---
@@ -3100,7 +3205,7 @@
 
     qs('#editor').addEventListener('pointerup', ()=>{
       if(!dragImageState) return;
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
       dragImageState = null;
     });
 
@@ -3112,7 +3217,7 @@
         } else {
           target.removeAttribute('checked');
         }
-        saveCurrentNote({shouldClose:false});
+        void saveCurrentNote({shouldClose:false});
       }
     });
 
@@ -3124,7 +3229,7 @@
         } else {
           target.removeAttribute('checked');
         }
-        saveCurrentNote({shouldClose:false});
+        void saveCurrentNote({shouldClose:false});
       }
     });
 
@@ -3151,19 +3256,19 @@
     imageSize.addEventListener('input', ()=>{
       if(!currentImage) return;
       currentImage.style.width = `${imageSize.value}%`;
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
     imageRotate.addEventListener('input', ()=>{
       if(!currentImage) return;
       currentImage.style.transform = `rotate(${imageRotate.value}deg)`;
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
     imageAlign.addEventListener('change', ()=>{
       if(!currentImage) return;
       applyImageAlign(imageAlign.value);
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
 
@@ -3172,7 +3277,7 @@
       const pinned = currentImage.dataset.pinned === 'true';
       currentImage.dataset.pinned = pinned ? 'false' : 'true';
       pinImageBtn.textContent = pinned ? 'Fijar imagen' : 'Desfijar imagen';
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
     qs('#removeImageBtn').addEventListener('click', ()=>{
@@ -3180,7 +3285,7 @@
       currentImage.remove();
       currentImage = null;
       imageControls.style.display = 'none';
-      saveCurrentNote({shouldClose:false});
+      void saveCurrentNote({shouldClose:false});
     });
 
 
@@ -3239,9 +3344,9 @@
     }
 
     // --- Init ---
-    function init(){
+    async function init(){
       loadState();
-      state.notebooks = state.notebooks.map(nb=>({coverColor:'#f08aba', ...nb}));
+      console.info(`Firebase project conectado: ${FIREBASE_CONFIG.projectId}`);
       renderNotebooks();
       renderNotes();
       renderTemplateGallery();
@@ -3250,13 +3355,13 @@
       populateEditorNotebook();
       renderCompactPalette();
       maybeShowOnboarding();
-      bootstrapAuth();
+      await bootstrapAuth();
 
       qsa('button, .btn, .toolbar button, .icon-btn').forEach(el=>{
         el.addEventListener('click', ()=>animateTap(el));
       });
     }
-    init();
+    void init();
 
     // Expose some functions for console debugging (optional)
     window._dn = { state, saveState, renderNotes, renderNotebooks };
