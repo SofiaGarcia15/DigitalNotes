@@ -1811,8 +1811,6 @@
     const STORAGE_KEY = 'digitalNotesData_v7';
     const ONBOARDING_KEY = 'digitalNotesOnboarding_v1';
     const CALENDAR_STABLE_KEY = 'digitalNotesCalendarStable_v1';
-    const AUTH_PROFILES_KEY = 'digitalNotesProfiles_v1';
-    const AUTH_SESSION_KEY = 'digitalNotesSession_v1';
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyBAEHS9YLCj5HVLZ3Q3dN_Pax714tVA9gg",
       authDomain: "digitalnotes-58622.firebaseapp.com",
@@ -1823,7 +1821,7 @@
       measurementId: "G-5FC50PYB8Y"
     };
     let state = { notebooks: [], notes: [], darkMode: false };
-    const uid = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+    const generateId = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
     const qs = s => document.querySelector(s);
     const qsa = s => document.querySelectorAll(s);
 
@@ -1856,25 +1854,6 @@
     let lastManualSavedSnapshot = '';
     let saveStatusTimer = null;
 
-    function readProfiles(){
-      try { return JSON.parse(localStorage.getItem(AUTH_PROFILES_KEY) || '[]'); } catch(_e){ return []; }
-    }
-    function writeProfiles(profiles){ localStorage.setItem(AUTH_PROFILES_KEY, JSON.stringify(profiles)); }
-    function getSession(){
-      try { return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch(_e){ return null; }
-    }
-    function getProfileByUid(userId){
-      return readProfiles().find(profile=>profile.id===userId) || null;
-    }
-    function upsertProfile(profile){
-      const profiles = readProfiles();
-      const index = profiles.findIndex(item=>item.id===profile.id);
-      if(index >= 0) profiles[index] = { ...profiles[index], ...profile };
-      else profiles.push(profile);
-      writeProfiles(profiles);
-      return profile;
-    }
-
     function isFirebaseConfigured(){
       return !Object.values(FIREBASE_CONFIG).some(value=>!value || value.includes('REEMPLAZA_CON_TU'));
     }
@@ -1898,7 +1877,7 @@
 
     function getDefaultState(){
       return {
-        notebooks:[{id:uid(),name:'General',cover:null,coverColor:'#f08aba'}],
+        notebooks:[{id:generateId(),name:'General',cover:null,coverColor:'#f08aba'}],
         notes:[],
         darkMode:false
       };
@@ -1911,7 +1890,7 @@
         darkMode: Boolean(rawState.darkMode)
       };
       if(nextState.notebooks.length === 0){
-        nextState.notebooks = [{id:uid(),name:'General',cover:null,coverColor:'#f08aba'}];
+        nextState.notebooks = [{id:generateId(),name:'General',cover:null,coverColor:'#f08aba'}];
       }
       nextState.notebooks = nextState.notebooks.map(nb=>({ coverColor:'#f08aba', ...nb }));
       nextState.notes = nextState.notes.map(note=>({ created: note.created || note.updated || Date.now(), ...note }));
@@ -1987,14 +1966,20 @@
       return map[code] || customMessage;
     }
 
-    function setSession(user){
+    function applyAuthenticatedUser(firebaseUser){
+      const user = {
+        id: firebaseUser.uid,
+        name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Usuario',
+        email: firebaseUser.email || '',
+        birth: ''
+      };
       currentUser = user;
-      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(user));
       document.body.classList.remove('auth-locked');
       qs('#authOverlay').style.display = 'none';
       qs('.logo-text').textContent = `Digital Notes 2026 · ${user.name}`;
       updateSettingsPanel();
       startNotesSync(user.id);
+      return user;
     }
 
     function getFirstName(name=''){
@@ -2018,18 +2003,11 @@
       }
       showToast(`Hola de vuelta ${firstName}`);
     }
+
     async function clearSession(options = {}){
-      const { skipFirebaseSignOut = false, silent = false } = options;
-      if(!skipFirebaseSignOut){
-        try {
-        await window.modularFirestoreHelpersReady;
-          const auth = getFirebaseAuthInstance();
-          if(auth.currentUser){ const { signOut } = window.modularFirestoreHelpers; await signOut(auth); }
-        } catch(_e){}
-      }
+      const { silent = false } = options;
       stopNotesSync();
       currentUser = null;
-      localStorage.removeItem(AUTH_SESSION_KEY);
       document.body.classList.add('auth-locked');
       qs('#authOverlay').style.display = 'flex';
       if(!silent) showToast('Sesión cerrada');
@@ -2056,46 +2034,51 @@
       const birth = qs('#birthdate').value;
       const msg = qs('#authMessage');
       const submitBtn = qs('#registerBtn');
-      if(!email || !password){ msg.textContent = 'Falta completar email y contraseña.'; return; }
+
+      if(!email || !password){
+        msg.textContent = 'Falta completar email y contraseña.';
+        return;
+      }
+
       submitBtn.disabled = true;
       try {
         await window.modularFirestoreHelpersReady;
         const auth = getFirebaseAuthInstance();
-        const { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } = window.modularFirestoreHelpers;
+        const firestoreDb = getFirebaseFirestoreDb();
+        const {
+          createUserWithEmailAndPassword,
+          signInWithEmailAndPassword,
+          updateProfile,
+          doc,
+          setDoc,
+          serverTimestamp
+        } = window.modularFirestoreHelpers;
+
         if(authMode === 'register'){
-          if(!birth){ msg.textContent = 'Falta completar algún campo obligatorio.'; return; }
+          if(!birth){
+            msg.textContent = 'Falta completar algún campo obligatorio.';
+            return;
+          }
+
           const credential = await createUserWithEmailAndPassword(auth, email, password);
-          const firestoreDb = getFirebaseFirestoreDb();
-          const { doc, setDoc, serverTimestamp } = window.modularFirestoreHelpers;
-          await setDoc(doc(firestoreDb, 'users', credential.user.uid), {
-            email,
-            birthdate: birth,
-            createdAt: serverTimestamp()
-          });
           const firebaseUser = credential.user;
           const profileName = name || email.split('@')[0];
+
           await updateProfile(firebaseUser, { displayName: profileName });
-          const user = upsertProfile({
-            id: firebaseUser.uid,
-            name: profileName,
-            email: firebaseUser.email || email,
-            birth
-          });
-          setSession(user);
-          showWelcomeMessage(user, true);
+          await setDoc(doc(firestoreDb, 'users', firebaseUser.uid), {
+            uid: firebaseUser.uid,
+            email,
+            displayName: profileName,
+            birthdate: birth,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+
+          showWelcomeMessage({ name: profileName }, true);
         } else {
-          const credential = await signInWithEmailAndPassword(auth, email, password);
-          const firebaseUser = credential.user;
-          const existingProfile = getProfileByUid(firebaseUser.uid);
-          const user = upsertProfile({
-            id: firebaseUser.uid,
-            name: firebaseUser.displayName || existingProfile?.name || email.split('@')[0],
-            email: firebaseUser.email || email,
-            birth: existingProfile?.birth || ''
-          });
-          setSession(user);
-          showWelcomeMessage(user, false);
+          await signInWithEmailAndPassword(auth, email, password);
         }
+
         msg.textContent = '';
       } catch(error){
         console.error('Error de Firebase en submitAuth:', error);
@@ -2108,34 +2091,28 @@
     async function syncSessionFromFirebaseUser(firebaseUser, options = {}){
       const { silent = true } = options;
       if(!firebaseUser){
-        if(currentUser) await clearSession({ skipFirebaseSignOut:true, silent:true });
+        if(currentUser) await clearSession({ silent:true });
         return;
       }
-      const existingProfile = getProfileByUid(firebaseUser.uid);
-      const user = upsertProfile({
-        id: firebaseUser.uid,
-        name: firebaseUser.displayName || existingProfile?.name || firebaseUser.email?.split('@')[0] || 'Usuario',
-        email: firebaseUser.email || existingProfile?.email || '',
-        birth: existingProfile?.birth || ''
-      });
-      setSession(user);
-      if(!silent) showWelcomeMessage(user, false);
+
+      const sessionUser = applyAuthenticatedUser(firebaseUser);
+      if(!silent) showWelcomeMessage(sessionUser, false);
     }
 
     async function bootstrapAuth(){
       updateAuthMode();
       qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
       qs('#registerBtn').addEventListener('click', submitAuth);
+
       try {
         await window.modularFirestoreHelpersReady;
         const auth = getFirebaseAuthInstance();
         const { onAuthStateChanged } = window.modularFirestoreHelpers;
+
         onAuthStateChanged(auth, user=>{ syncSessionFromFirebaseUser(user); });
       } catch(error){
         console.error('Error de Firebase en bootstrapAuth:', error);
         qs('#authMessage').textContent = mapFirebaseError(error);
-        const session = getSession();
-        if(session){ setSession(session); showWelcomeMessage(session, false); }
       }
     }
 
@@ -2646,7 +2623,7 @@
         editingNote.notebook=notebook;
         editingNote.updated=Date.now();
       } else {
-        const newNote = {id:uid(),title,content,notebook,updated:Date.now(), created:Date.now(), bgColor:null, textColor:null};
+        const newNote = {id:generateId(),title,content,notebook,updated:Date.now(), created:Date.now(), bgColor:null, textColor:null};
         state.notes.push(newNote);
         editingNote = newNote;
       }
@@ -2685,7 +2662,7 @@
       } else {
         const cover = qs('#nbCoverFile').files[0]? await fileToDataUrl(qs('#nbCoverFile').files[0]):null;
         const coverColor = qs('#nbCoverColor').value;
-        state.notebooks.push({id:uid(),name,cover,coverColor});
+        state.notebooks.push({id:generateId(),name,cover,coverColor});
       }
       saveState(); renderNotebooks(); qs('#overlayNotebook').style.display='none';
     });
@@ -3310,7 +3287,15 @@
     qs('#closeSettingsBtn').addEventListener('click', ()=>qs('#overlaySettings').style.display='none');
     qs('#logoutBtn').addEventListener('click', async ()=>{
       qs('#overlaySettings').style.display='none';
-      await clearSession();
+      try {
+        await window.modularFirestoreHelpersReady;
+        const auth = getFirebaseAuthInstance();
+        const { signOut } = window.modularFirestoreHelpers;
+        await signOut(auth);
+      } catch(error){
+        console.error('Error al cerrar sesión en Firebase Auth:', error);
+        showToast('No se pudo cerrar la sesión. Intenta nuevamente.');
+      }
     });
 
     // --- Utility: close overlays when clicking outside modal content ---
