@@ -1769,41 +1769,10 @@
   </template>
 
   <script type="module">
-    window.modularFirestoreHelpersReady = (async ()=>{
-      const { initializeApp, getApps, getApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
-      const { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
-      const { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
+    import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+    import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
-      window.modularFirestoreHelpers = {
-        getFirebaseApp(config){
-          return getApps().length ? getApp() : initializeApp(config);
-        },
-        getAuthInstance(config){
-          return getAuth(this.getFirebaseApp(config));
-        },
-        getFirestoreDb(config){
-          const app = this.getFirebaseApp(config);
-          return getFirestore(app);
-        },
-        createUserWithEmailAndPassword,
-        signInWithEmailAndPassword,
-        updateProfile,
-        onAuthStateChanged,
-        signOut,
-        doc,
-        setDoc,
-        serverTimestamp,
-        collection,
-        query,
-        where,
-        orderBy,
-        onSnapshot,
-        deleteDoc
-      };
-      return window.modularFirestoreHelpers;
-    })();
-  </script>
-  <script>
     /* ---------------------------
        Digital Notes 2026 - JS
        Todo en un solo archivo
@@ -1857,20 +1826,20 @@
       return !Object.values(FIREBASE_CONFIG).some(value=>!value || value.includes('REEMPLAZA_CON_TU'));
     }
 
+    function getFirebaseAppInstance(){
+      return getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
+    }
+
     function getFirebaseAuthInstance(){
       if(firebaseAuth) return firebaseAuth;
       if(!isFirebaseConfigured()) throw new Error('Configura FIREBASE_CONFIG con los datos de tu proyecto Firebase.');
-      const helpers = window.modularFirestoreHelpers;
-      if(!helpers) throw new Error('Firebase modular no está disponible.');
-      firebaseAuth = helpers.getAuthInstance(FIREBASE_CONFIG);
+      firebaseAuth = getAuth(getFirebaseAppInstance());
       return firebaseAuth;
     }
 
     function getFirebaseFirestoreDb(){
       if(firebaseFirestoreDb) return firebaseFirestoreDb;
-      const helpers = window.modularFirestoreHelpers;
-      if(!helpers) throw new Error('Firestore modular no está disponible.');
-      firebaseFirestoreDb = helpers.getFirestoreDb(FIREBASE_CONFIG);
+      firebaseFirestoreDb = getFirestore(getFirebaseAppInstance());
       return firebaseFirestoreDb;
     }
 
@@ -1916,9 +1885,7 @@
     async function syncStateToFirestore(){
       if(!currentUser || isApplyingRemoteState) return;
       try {
-        await window.modularFirestoreHelpersReady;
         const firestoreDb = getFirebaseFirestoreDb();
-        const { doc, setDoc, serverTimestamp } = window.modularFirestoreHelpers;
         await setDoc(doc(firestoreDb, 'notes', currentUser.id), {
           userId: currentUser.id,
           notebooks: state.notebooks,
@@ -1934,7 +1901,6 @@
     function startNotesSync(userId){
       stopNotesSync();
       const firestoreDb = getFirebaseFirestoreDb();
-      const { doc, onSnapshot } = window.modularFirestoreHelpers;
       notesDocUnsubscribe = onSnapshot(doc(firestoreDb, 'notes', userId), snapshot=>{
         const data = snapshot.data();
         isApplyingRemoteState = true;
@@ -2041,17 +2007,8 @@
 
       submitBtn.disabled = true;
       try {
-        await window.modularFirestoreHelpersReady;
         const auth = getFirebaseAuthInstance();
         const firestoreDb = getFirebaseFirestoreDb();
-        const {
-          createUserWithEmailAndPassword,
-          signInWithEmailAndPassword,
-          updateProfile,
-          doc,
-          setDoc,
-          serverTimestamp
-        } = window.modularFirestoreHelpers;
 
         if(authMode === 'register'){
           if(!birth){
@@ -2104,9 +2061,7 @@
       qs('#registerBtn').addEventListener('click', submitAuth);
 
       try {
-        await window.modularFirestoreHelpersReady;
         const auth = getFirebaseAuthInstance();
-        const { onAuthStateChanged } = window.modularFirestoreHelpers;
 
         onAuthStateChanged(auth, user=>{ syncSessionFromFirebaseUser(user); });
       } catch(error){
@@ -3287,9 +3242,7 @@
     qs('#logoutBtn').addEventListener('click', async ()=>{
       qs('#overlaySettings').style.display='none';
       try {
-        await window.modularFirestoreHelpersReady;
         const auth = getFirebaseAuthInstance();
-        const { signOut } = window.modularFirestoreHelpers;
         await signOut(auth);
       } catch(error){
         console.error('Error al cerrar sesión en Firebase Auth:', error);
