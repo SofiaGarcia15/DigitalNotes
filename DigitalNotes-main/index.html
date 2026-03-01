@@ -401,7 +401,7 @@
       max-height:min(60vh, 420px);
       border-radius:10px;
       border:1px solid var(--border);
-      padding:14px;
+      padding:14px 72px 14px 14px;
       overflow:auto;
       background:var(--panel-bg);
       color:var(--panel-text);
@@ -418,7 +418,9 @@
       right:12px;
       display:flex;
       flex-direction:column;
-      gap:8px
+      gap:8px;
+      z-index:6;
+      pointer-events:none;
     }
 
     .editor-scroll button{
@@ -429,7 +431,8 @@
       background:linear-gradient(180deg,#ffd0e6,#ffb6cc);
       cursor:pointer;
       box-shadow:0 6px 14px rgba(195,107,133,0.2);
-      font-size:18px
+      font-size:18px;
+      pointer-events:auto;
     }
 
     .editor[contenteditable]{outline:none}
@@ -794,6 +797,10 @@
       gap:8px;
       align-items:center;
       flex-wrap:wrap;
+    }
+
+    #importLabel{
+      font-weight:400;
     }
 
     .toast-msg{
@@ -1483,7 +1490,7 @@
               <option value="Comic Sans MS">Comic Sans MS</option>
             </select>
             <select id="emojiSelect">
-              <option value="">😊 Emoji</option>
+              <option value="">Emoji</option>
               <option>😀</option>
               <option>😍</option>
               <option>✨</option>
@@ -1793,7 +1800,7 @@
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
     import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, addDoc, updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -1841,7 +1848,6 @@
     let firebaseFirestoreDb = null;
     let notesDocUnsubscribe = null;
     let isApplyingRemoteState = false;
-    let lastManualSavedSnapshot = '';
     let saveStatusTimer = null;
     let isSaving = false;
     let hasQueuedSave = false;
@@ -2445,10 +2451,6 @@
       setupAutosave();
       qs('#imageControls').style.display = 'none';
       currentImage = null;
-      const noteTitle = note?.title || '';
-      const noteContent = note?.content || '';
-      const noteNotebook = note?.notebook || (state.notebooks[0]?.id || '');
-      lastManualSavedSnapshot = `${noteTitle}::${noteContent}::${noteNotebook}`;
       qs('#saveNote').textContent = 'Guardar';
       qs('#saveNote').classList.remove('saving','saved','error');
       qs('#editorModal').classList.remove('fullscreen');
@@ -2472,18 +2474,9 @@
     }
 
     qs('#saveNote').addEventListener('click', async ()=>{
-      const title = qs('#noteTitle').value;
-      const content = qs('#editor').innerHTML;
-      const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
-      const snapshot = `${title}::${content}::${notebook}`;
-      if(snapshot === lastManualSavedSnapshot){
-        animateSaveButton('Esta nota ya está guardada', true);
-        return;
-      }
       animateSaveButton('Guardando...');
       try {
         await saveCurrentNote({ shouldClose:false, throwOnError:true });
-        lastManualSavedSnapshot = `${qs('#noteTitle').value}::${qs('#editor').innerHTML}::${qs('#editorNotebook').value || state.notebooks[0].id}`;
         animateSaveButton('Guardado ✔');
       } catch(error){
         console.error('Error al guardar manualmente:', error);
@@ -2629,6 +2622,7 @@
       const title = qs('#noteTitle').value;
       const content = qs('#editor').innerHTML;
       const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
+      const isNewNote = !editingNote;
       if(editingNote){
         editingNote.title=title;
         editingNote.content=content;
@@ -2639,6 +2633,32 @@
         state.notes.push(newNote);
         editingNote = newNote;
       }
+
+      if(currentUser){
+        const firestoreDb = getFirebaseFirestoreDb();
+        const notesCollectionRef = collection(firestoreDb, 'users', currentUser.id, 'notes');
+        const firestorePayload = {
+          title: editingNote.title,
+          content: editingNote.content,
+          notebook: editingNote.notebook,
+          created: editingNote.created,
+          updated: editingNote.updated,
+          bgColor: editingNote.bgColor || null,
+          textColor: editingNote.textColor || null,
+          updatedAt: serverTimestamp()
+        };
+
+        if(isNewNote){
+          const createdRef = await addDoc(notesCollectionRef, {
+            ...firestorePayload,
+            createdAt: serverTimestamp()
+          });
+          editingNote.id = createdRef.id;
+        } else {
+          await updateDoc(doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id), firestorePayload);
+        }
+      }
+
       await saveState({ throwOnError });
       renderNotes();
       refreshNotebookWorkspace();
@@ -2648,11 +2668,11 @@
     function setupAutosave(){
       const editor = qs('#editor'); const titleEl = qs('#noteTitle');
       editor.oninput = titleEl.oninput = ()=>{
+        if(!editingNote) return;
         clearTimeout(autosaveTimer);
         autosaveTimer=setTimeout(async ()=>{
           try {
             await saveCurrentNote({ shouldClose:false, throwOnError:true });
-            lastManualSavedSnapshot = `${qs('#noteTitle').value}::${qs('#editor').innerHTML}::${qs('#editorNotebook').value || state.notebooks[0].id}`;
           } catch(error){
             console.error('Error en autoguardado:', error);
             animateSaveButton('Error al guardar', true);
@@ -2776,12 +2796,17 @@
     });
 
     function insertHtmlAtCursor(html) {
+      const editor = qs('#editor');
       const sel = window.getSelection();
       if (!sel || !sel.rangeCount) {
-        qs('#editor').insertAdjacentHTML('beforeend', html);
+        editor.insertAdjacentHTML('beforeend', html);
         return;
       }
       const range = sel.getRangeAt(0);
+      if(!editor.contains(range.commonAncestorContainer)){
+        editor.insertAdjacentHTML('beforeend', html);
+        return;
+      }
       range.deleteContents();
       const el = document.createElement('div');
       el.innerHTML = html;
