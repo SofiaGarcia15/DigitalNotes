@@ -173,7 +173,8 @@
     .notes-grid{
       display:grid;
       grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
-      gap:18px
+      gap:18px;
+      width:100%;
     }
 
     .note-card{
@@ -234,7 +235,8 @@
     .notebooks{
       display:flex;
       gap:18px;
-      flex-wrap:wrap
+      flex-wrap:wrap;
+      width:100%;
     }
 
     .notebook{
@@ -339,7 +341,8 @@
       max-width:960px;
       border-radius:12px;
       padding:18px;
-      box-shadow:0 18px 40px rgba(0,0,0,0.25)
+      box-shadow:0 18px 40px rgba(0,0,0,0.25);
+      overflow-x:hidden;
     }
 
     .title-input{
@@ -358,7 +361,9 @@
       gap:8px;
       margin-bottom:8px;
       align-items:center;
-      flex-wrap:wrap
+      flex-wrap:wrap;
+      width:100%;
+      overflow-x:clip;
     }
 
     .toolbar button,
@@ -370,11 +375,13 @@
       background:var(--panel-bg);
       color:var(--panel-text);
       cursor:pointer;
-      font-weight:700
+      font-weight:700;
+      max-width:100%;
     }
 
     .toolbar select{
-      min-width:160px
+      min-width:120px;
+      width:fit-content;
     }
 
     .toolbar select.active-select{
@@ -428,29 +435,6 @@
 
     .editor-shell{
       position:relative
-    }
-
-    .editor-scroll{
-      position:absolute;
-      top:12px;
-      right:-52px;
-      display:flex;
-      flex-direction:column;
-      gap:8px;
-      z-index:6;
-      pointer-events:none;
-    }
-
-    .editor-scroll button{
-      width:42px;
-      height:42px;
-      border-radius:14px;
-      border:none;
-      background:linear-gradient(180deg,#ffd0e6,#ffb6cc);
-      cursor:pointer;
-      box-shadow:0 6px 14px rgba(195,107,133,0.2);
-      font-size:18px;
-      pointer-events:auto;
     }
 
     .editor[contenteditable]{outline:none}
@@ -1404,12 +1388,6 @@
       .editor-shell{
         padding-right:0;
       }
-      .editor-scroll{
-        right:8px;
-        top:auto;
-        bottom:10px;
-        flex-direction:row;
-      }
       #fullscreenEditorBtn{
         display:none;
       }
@@ -1655,10 +1633,6 @@
 
       <div class="editor-shell">
         <div id="editor" class="editor" contenteditable="true" spellcheck="true"></div>
-        <div class="editor-scroll" aria-label="Navegación rápida">
-          <button id="scrollUpBtn" title="Subir">⬆️</button>
-          <button id="scrollDownBtn" title="Bajar">⬇️</button>
-        </div>
       </div>
     </div>
   </div>
@@ -1945,6 +1919,11 @@
       }
       nextState.notebooks = nextState.notebooks.map(nb=>({ coverColor:'#f08aba', bookBgColor:'#ffcae3', bookBgImage:null, ...nb }));
       nextState.notes = nextState.notes.map(note=>({ created: note.created || note.updated || Date.now(), ...note }));
+      const fallbackNotebookId = nextState.notebooks[0].id;
+      nextState.notes = nextState.notes.map(note=>({
+        ...note,
+        notebook: nextState.notebooks.some(nb=>nb.id===note.notebook) ? note.notebook : fallbackNotebookId
+      }));
       return nextState;
     }
 
@@ -2269,8 +2248,10 @@
       const grid = qs('#notesGrid'); grid.innerHTML='';
       const filterId = qs('#filterNotebook').value;
       const searchVal = qs('#searchInput').value.toLowerCase();
+      const knownNotebookIds = new Set(state.notebooks.map(nb=>nb.id));
       const notesToRender = state.notes.filter(n=>{
-        const matchNotebook = filterId==='all'||n.notebook===filterId;
+        const effectiveNotebook = knownNotebookIds.has(n.notebook) ? n.notebook : state.notebooks[0]?.id;
+        const matchNotebook = filterId==='all'||effectiveNotebook===filterId;
         const matchSearch = !searchVal || (stripHtml(n.content).toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal));
         return matchNotebook && matchSearch;
       }).sort((a,b)=>b.updated - a.updated);
@@ -2559,6 +2540,18 @@
       editingNote=null;
     }
 
+    qs('#editor').addEventListener('keydown', (event)=>{
+      if(event.key === 'PageUp' || (event.altKey && event.key === 'ArrowUp')){
+        event.preventDefault();
+        qs('#editor').scrollBy({top:-240, behavior:'smooth'});
+        return;
+      }
+      if(event.key === 'PageDown' || (event.altKey && event.key === 'ArrowDown')){
+        event.preventDefault();
+        qs('#editor').scrollBy({top:240, behavior:'smooth'});
+      }
+    });
+
     qs('#saveNote').addEventListener('click', async ()=>{
       animateSaveButton('Guardando...', true);
       await saveCurrentNote({ shouldClose:false });
@@ -2825,7 +2818,7 @@
         const coverColor = qs('#nbCoverColor').value;
         state.notebooks.push({id:generateId(),name,cover,coverColor,bookBgColor:coverColor,bookBgImage:null});
       }
-      saveState(); renderNotebooks(); qs('#overlayNotebook').style.display='none';
+      saveState(); renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); qs('#overlayNotebook').style.display='none';
     });
     function deleteNotebook(id){
       if(!confirm('Eliminar libreta y sus notas. ¿Continuar?')) return;
@@ -3227,24 +3220,33 @@
       ensureTemplatePad().clear();
     }
 
-    qs('#templateSaveBtn').addEventListener('click', ()=>{
+    qs('#templateSaveBtn').addEventListener('click', async ()=>{
       const selectedTemplate = templateBgImage.getAttribute('src');
       if(!selectedTemplate) return;
+      animateSaveButton('Guardando...', true);
       const composedCanvas = document.createElement('canvas');
       composedCanvas.width = templateCanvas.width;
       composedCanvas.height = templateCanvas.height;
       const composedCtx = composedCanvas.getContext('2d');
       const baseImage = new Image();
-      baseImage.onload = async ()=>{
+
+      try {
+        await new Promise((resolve, reject)=>{
+          baseImage.onload = resolve;
+          baseImage.onerror = reject;
+          baseImage.src = selectedTemplate;
+        });
         composedCtx.drawImage(baseImage, 0, 0, composedCanvas.width, composedCanvas.height);
         composedCtx.drawImage(templateCanvas, 0, 0, composedCanvas.width, composedCanvas.height);
         const dataUrl = composedCanvas.toDataURL('image/png');
         insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'46%' , template:true });
-        await saveCurrentNote({shouldClose:false});
+        await saveCurrentNote({shouldClose:false, throwOnError:true});
         animateSaveButton('Guardado ✔');
         overlayTemplateEditor.style.display = 'none';
-      };
-      baseImage.src = selectedTemplate;
+      } catch(error){
+        console.error('No se pudo guardar la plantilla en la nota:', error);
+        animateSaveButton('Error al guardar', true);
+      }
     });
 
     qs('#templateCloseBtn').addEventListener('click', ()=>overlayTemplateEditor.style.display='none');
@@ -3398,14 +3400,6 @@
         }
         void saveCurrentNote({shouldClose:false});
       }
-    });
-
-    qs('#scrollUpBtn').addEventListener('click', ()=>{
-      qs('#editor').scrollBy({top:-240, behavior:'smooth'});
-    });
-
-    qs('#scrollDownBtn').addEventListener('click', ()=>{
-      qs('#editor').scrollBy({top:240, behavior:'smooth'});
     });
 
     function applyImageAlign(value){
