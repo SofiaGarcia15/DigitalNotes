@@ -616,8 +616,6 @@
     }
 
     .template-inline{
-      width:min(100%,420px) !important;
-      max-width:min(100%,420px) !important;
       cursor:zoom-in;
     }
 
@@ -806,6 +804,9 @@
       flex-wrap:wrap;
     }
 
+    #importLabel{
+      font-weight:400 !important;
+    }
 
     .toast-msg{
       position:fixed;
@@ -944,16 +945,6 @@
       align-items:center;
       font-size:13px;
       color:var(--panel-text);
-    }
-
-    .book-bg-controls label input[type="color"]{
-      width:48px;
-      height:38px;
-      padding:0;
-      border:none;
-      border-radius:10px;
-      background:transparent;
-      cursor:pointer;
     }
 
     .notebook-notes .note-card{
@@ -1480,6 +1471,7 @@
         <p>Vista de doble página con fondo personalizable y animaciones activas en todas las hojas de este cuaderno.</p>
         <div class="book-bg-controls">
           <label>Color de fondo <input type="color" id="bookBgColor" value="#ffcae3"></label>
+          <label>Imagen de fondo <input type="file" id="bookBgImage" accept="image/*"></label>
           <button id="resetBookBg" class="btn" type="button" style="background:#ddd">Restablecer</button>
         </div>
         <button id="openBookModeInline" class="notebook-open-mode-btn"><span class="book-icon" aria-hidden="true"></span> Abrir modo libreta</button>
@@ -2355,6 +2347,7 @@
     function applyNotebookBackgroundControls(notebookId){
       const nb = state.notebooks.find(n=>n.id===notebookId);
       qs('#bookBgColor').value = nb?.bookBgColor || nb?.coverColor || '#ffcae3';
+      qs('#bookBgImage').value = '';
     }
 
     function setBookCover(notebook){
@@ -2474,6 +2467,16 @@
       await saveState();
       setBookCover(nb);
     });
+    qs('#bookBgImage').addEventListener('change', async (e)=>{
+      if(!activeNotebookId) return;
+      const file = e.target.files?.[0];
+      if(!file) return;
+      const nb = state.notebooks.find(n=>n.id===activeNotebookId);
+      if(!nb) return;
+      nb.bookBgImage = await fileToDataUrl(file);
+      await saveState();
+      setBookCover(nb);
+    });
     qs('#resetBookBg').addEventListener('click', async ()=>{
       if(!activeNotebookId) return;
       const nb = state.notebooks.find(n=>n.id===activeNotebookId);
@@ -2551,7 +2554,7 @@
         animateSaveButton('Guardado ✔');
       } catch(error){
         console.error('Error al guardar manualmente:', error);
-        animateSaveButton('Guardado ✔');
+        animateSaveButton('Error al guardar', true);
       }
     });
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
@@ -2739,19 +2742,7 @@
             });
             editingNote.id = createdRef.id;
           } else {
-            const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
-            try {
-              await updateDoc(noteRef, firestorePayload);
-            } catch(error){
-              if(error?.code === 'not-found'){
-                await setDoc(noteRef, {
-                  ...firestorePayload,
-                  createdAt: serverTimestamp()
-                }, { merge:true });
-              } else {
-                throw error;
-              }
-            }
+            await updateDoc(doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id), firestorePayload);
           }
         }
 
@@ -2778,7 +2769,7 @@
             await saveCurrentNote({ shouldClose:false, throwOnError:true });
           } catch(error){
             console.error('Error en autoguardado:', error);
-            animateSaveButton('Guardado ✔');
+            animateSaveButton('Error al guardar', true);
           }
         },700);
       };
@@ -3000,7 +2991,7 @@
     qsa('.template-btn').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const src = btn.dataset.template;
-        insertAssetBlock({ src, label:'Plantilla en la nota', width:'58%' , template:true });
+        insertAssetBlock({ src, label:'Plantilla en la nota', width:'96%' , template:true });
         void saveCurrentNote({shouldClose:false});
         setTemplateSession(false);
       });
@@ -3224,7 +3215,7 @@
         composedCtx.drawImage(baseImage, 0, 0, composedCanvas.width, composedCanvas.height);
         composedCtx.drawImage(templateCanvas, 0, 0, composedCanvas.width, composedCanvas.height);
         const dataUrl = composedCanvas.toDataURL('image/png');
-        insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'58%' , template:true });
+        insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'96%' , template:true });
         void saveCurrentNote({shouldClose:false});
         overlayTemplateEditor.style.display = 'none';
       };
