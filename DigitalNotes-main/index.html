@@ -607,6 +607,10 @@
       color:var(--panel-text);
     }
 
+    .template-inline{
+      cursor:zoom-in;
+    }
+
     .compact-color-palette{
       display:none;
       margin-bottom:10px;
@@ -684,6 +688,11 @@
     .btn.saved{
       background:linear-gradient(180deg,#b6f3d1,#93e3b8);
       color:#1d5b3a;
+    }
+
+    .btn.error{
+      background:linear-gradient(180deg,#ffc8c8,#ff9f9f);
+      color:#7a1f1f;
     }
 
     .calendar-modal{
@@ -1238,6 +1247,19 @@
     }
 
     /* RESPONSIVE FIX FULL */
+    @media(max-width:768px){
+      .template-grid{
+        grid-template-columns:repeat(auto-fill,minmax(120px,1fr));
+        gap:8px;
+      }
+      .template-card{
+        padding:8px;
+      }
+      .template-card img{
+        height:118px;
+      }
+    }
+
     @media(max-width:600px){
       header{
         flex-direction:column;
@@ -1324,7 +1346,7 @@
       .book-stage{ width:100%; }
       .book-nav{ width:100%; justify-content:center; }
       .book-content{ max-height:340px; }
-      .template-card img{height:140px;}
+      .template-card img{height:110px;}
     }
 
     @media (min-width:601px) and (max-width:1024px){
@@ -1753,7 +1775,7 @@
   <div id="appToast" class="toast-msg" aria-live="polite"></div>
 
   <div class="icon-btn" id="fab" title="Agregar nota">
-    <img src="logodn.index.png" alt="Digital Notes" style="width:36px;height:36px;object-fit:contain;border-radius:8px">
+    <span aria-hidden="true">+</span>
   </div>
 
   <footer>
@@ -1821,6 +1843,10 @@
     let isApplyingRemoteState = false;
     let lastManualSavedSnapshot = '';
     let saveStatusTimer = null;
+    let isSaving = false;
+    let hasQueuedSave = false;
+    let activeSavePromise = null;
+    let autosaveTimer = null;
 
     function isFirebaseConfigured(){
       return !Object.values(FIREBASE_CONFIG).some(value=>!value || value.includes('REEMPLAZA_CON_TU'));
@@ -1884,18 +1910,14 @@
 
     async function syncStateToFirestore(){
       if(!currentUser || isApplyingRemoteState) return;
-      try {
-        const firestoreDb = getFirebaseFirestoreDb();
-        await setDoc(doc(firestoreDb, 'notes', currentUser.id), {
-          userId: currentUser.id,
-          notebooks: state.notebooks,
-          notes: state.notes,
-          darkMode: state.darkMode,
-          updatedAt: serverTimestamp()
-        }, { merge: true });
-      } catch(error){
-        console.error('Error guardando notas en Firestore:', error);
-      }
+      const firestoreDb = getFirebaseFirestoreDb();
+      await setDoc(doc(firestoreDb, 'notes', currentUser.id), {
+        userId: currentUser.id,
+        notebooks: state.notebooks,
+        notes: state.notes,
+        darkMode: state.darkMode,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
     }
 
     function startNotesSync(userId){
@@ -1934,7 +1956,7 @@
     function applyAuthenticatedUser(firebaseUser){
       const user = {
         id: firebaseUser.uid,
-        name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Usuario',
+        name: firebaseUser.displayName || firebaseUser.email || 'Usuario',
         email: firebaseUser.email || '',
         birth: ''
       };
@@ -1959,14 +1981,17 @@
       showToast.timer = setTimeout(()=>toast.classList.remove('show'), 2400);
     }
 
+    function getUserDisplayLabel(user = {}){
+      return user.name?.trim() || user.email?.trim() || 'usuario';
+    }
+
     function showWelcomeMessage(user, isNewUser=false){
-      const firstName = getFirstName(user.name);
+      const label = getUserDisplayLabel(user);
       if(isNewUser){
-        showToast('Se ha registrado con éxito');
-        setTimeout(()=>showToast(`Hola, bienvenido ${firstName}`), 300);
+        showToast(`Registro exitoso, ${label}`);
         return;
       }
-      showToast(`Hola de vuelta ${firstName}`);
+      showToast(`Hola de vuelta, ${label}`);
     }
 
     async function clearSession(options = {}){
@@ -2030,9 +2055,13 @@
             updatedAt: serverTimestamp()
           }, { merge: true });
 
-          showWelcomeMessage({ name: profileName }, true);
+          showWelcomeMessage({ name: profileName, email }, true);
         } else {
-          await signInWithEmailAndPassword(auth, email, password);
+          const credential = await signInWithEmailAndPassword(auth, email, password);
+          showWelcomeMessage({
+            name: credential.user.displayName || credential.user.email,
+            email: credential.user.email || email
+          }, false);
         }
 
         msg.textContent = '';
@@ -2092,9 +2121,31 @@
       if(state.darkMode) document.body.setAttribute('data-theme','dark');
     }
 
-    function saveState(){
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      void syncStateToFirestore();
+    async function runStateSave(){
+      while(hasQueuedSave){
+        hasQueuedSave = false;
+        isSaving = true;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        await syncStateToFirestore();
+      }
+      isSaving = false;
+    }
+
+    async function saveState({ throwOnError = false } = {}){
+      hasQueuedSave = true;
+      if(!activeSavePromise){
+        activeSavePromise = runStateSave().finally(()=>{
+          activeSavePromise = null;
+          isSaving = false;
+        });
+      }
+
+      try {
+        await activeSavePromise;
+      } catch(error){
+        if(throwOnError) throw error;
+        console.error('Error guardando estado:', error);
+      }
     }
 
     // --- Dark mode ---
@@ -2194,7 +2245,7 @@
         card.type = 'button';
         card.className = 'template-card';
         card.innerHTML = `<img src="${template.src}" alt="${template.name}"><span>${template.name}</span>`;
-        card.addEventListener('click', ()=>openTemplateEditor(template));
+        card.addEventListener('click', ()=>openTemplatePreview(template.src));
         grid.appendChild(card);
       });
     }
@@ -2399,7 +2450,7 @@
       const noteNotebook = note?.notebook || (state.notebooks[0]?.id || '');
       lastManualSavedSnapshot = `${noteTitle}::${noteContent}::${noteNotebook}`;
       qs('#saveNote').textContent = 'Guardar';
-      qs('#saveNote').classList.remove('saving','saved');
+      qs('#saveNote').classList.remove('saving','saved','error');
       qs('#editorModal').classList.remove('fullscreen');
       qs('#fullscreenEditorBtn').textContent = '⛶ Pantalla completa';
       // set current colors preview
@@ -2416,10 +2467,11 @@
     }
     function closeEditor(){
       qs('#overlayEditor').style.display='none';
+      clearTimeout(autosaveTimer);
       editingNote=null;
     }
 
-    qs('#saveNote').addEventListener('click', ()=>{
+    qs('#saveNote').addEventListener('click', async ()=>{
       const title = qs('#noteTitle').value;
       const content = qs('#editor').innerHTML;
       const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
@@ -2429,9 +2481,14 @@
         return;
       }
       animateSaveButton('Guardando...');
-      void saveCurrentNote({shouldClose:false});
-      lastManualSavedSnapshot = snapshot;
-      animateSaveButton('Guardado ✓');
+      try {
+        await saveCurrentNote({ shouldClose:false, throwOnError:true });
+        lastManualSavedSnapshot = `${qs('#noteTitle').value}::${qs('#editor').innerHTML}::${qs('#editorNotebook').value || state.notebooks[0].id}`;
+        animateSaveButton('Guardado ✔');
+      } catch(error){
+        console.error('Error al guardar manualmente:', error);
+        animateSaveButton('Error al guardar', true);
+      }
     });
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
     qs('#deleteNoteBtn').addEventListener('click', ()=>{
@@ -2541,16 +2598,17 @@
       }
     }
 
-    function animateSaveButton(message='Guardado ✓', keep=false){
+    function animateSaveButton(message='Guardado ✔', keep=false){
       const btn = qs('#saveNote');
       clearTimeout(saveStatusTimer);
-      btn.classList.remove('saving');
+      btn.classList.remove('saving','saved','error');
       if(message.includes('Guardando')) btn.classList.add('saving');
+      else if(message.includes('Error')) btn.classList.add('error');
       else btn.classList.add('saved');
       btn.textContent = message;
       if(!keep){
         saveStatusTimer = setTimeout(()=>{
-          btn.classList.remove('saving','saved');
+          btn.classList.remove('saving','saved','error');
           btn.textContent = 'Guardar';
         }, 1100);
       }
@@ -2567,7 +2625,7 @@
       closeCalendarModal();
     });
 
-    async function saveCurrentNote({shouldClose=false} = {}){
+    async function saveCurrentNote({ shouldClose=false, throwOnError=false } = {}){
       const title = qs('#noteTitle').value;
       const content = qs('#editor').innerHTML;
       const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
@@ -2581,15 +2639,25 @@
         state.notes.push(newNote);
         editingNote = newNote;
       }
-      await saveState(); renderNotes(); refreshNotebookWorkspace();
+      await saveState({ throwOnError });
+      renderNotes();
+      refreshNotebookWorkspace();
       if(shouldClose){ editingNote=null; closeEditor(); }
     }
 
     function setupAutosave(){
       const editor = qs('#editor'); const titleEl = qs('#noteTitle');
-      let timer; editor.oninput = titleEl.oninput = ()=>{
-        clearTimeout(timer);
-        timer=setTimeout(()=>void saveCurrentNote({shouldClose:false}),700);
+      editor.oninput = titleEl.oninput = ()=>{
+        clearTimeout(autosaveTimer);
+        autosaveTimer=setTimeout(async ()=>{
+          try {
+            await saveCurrentNote({ shouldClose:false, throwOnError:true });
+            lastManualSavedSnapshot = `${qs('#noteTitle').value}::${qs('#editor').innerHTML}::${qs('#editorNotebook').value || state.notebooks[0].id}`;
+          } catch(error){
+            console.error('Error en autoguardado:', error);
+            animateSaveButton('Error al guardar', true);
+          }
+        },700);
       };
     }
 
@@ -3093,8 +3161,7 @@
       if(target && target.tagName === 'IMG' && target.classList.contains('template-inline')){
         e.preventDefault();
         e.stopPropagation();
-        qs('#templatePreviewImage').src = target.src;
-        qs('#overlayTemplatePreview').style.display = 'flex';
+        openTemplatePreview(target.src);
         return;
       }
       if(target && target.tagName === 'IMG'){
@@ -3225,6 +3292,12 @@
       modal.classList.toggle('fullscreen');
       qs('#fullscreenEditorBtn').textContent = modal.classList.contains('fullscreen') ? '🗗 Salir de pantalla completa' : '⛶ Pantalla completa';
     });
+
+    function openTemplatePreview(src){
+      if(!src) return;
+      qs('#templatePreviewImage').src = src;
+      qs('#overlayTemplatePreview').style.display = 'flex';
+    }
 
     qs('#templatePreviewClose').addEventListener('click', ()=>qs('#overlayTemplatePreview').style.display='none');
     qs('#templatePreviewEdit').addEventListener('click', ()=>{
