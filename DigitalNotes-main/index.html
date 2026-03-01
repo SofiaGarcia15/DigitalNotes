@@ -1053,6 +1053,7 @@
       transition:transform 0.65s ease;
       transform-style:preserve-3d;
       transform-origin:center;
+      perspective:1800px;
     }
 
     .book-spread::before{
@@ -1075,6 +1076,7 @@
       position:relative;
       overflow:hidden;
       color:#302127;
+      backface-visibility:hidden;
     }
 
     [data-theme="dark"] .book-leaf{
@@ -1095,6 +1097,80 @@
 
     .book-spread.turning{
       box-shadow:0 22px 46px rgba(0,0,0,0.3)
+    }
+
+    .book-page-turner{
+      position:absolute;
+      top:0;
+      bottom:0;
+      width:50%;
+      z-index:8;
+      pointer-events:none;
+      transform-style:preserve-3d;
+      display:none;
+    }
+
+    .book-page-turner.forward{
+      right:0;
+      transform-origin:left center;
+    }
+
+    .book-page-turner.backward{
+      left:0;
+      transform-origin:right center;
+    }
+
+    .book-page-turner.active{
+      display:block;
+    }
+
+    .book-page-turner.forward.active{
+      animation:leafFlipForward 940ms cubic-bezier(0.2,0.78,0.2,1);
+    }
+
+    .book-page-turner.backward.active{
+      animation:leafFlipBackward 940ms cubic-bezier(0.2,0.78,0.2,1);
+    }
+
+    .turn-face{
+      position:absolute;
+      inset:0;
+      padding:24px 28px;
+      overflow:hidden;
+      border-radius:10px;
+      background:#fff5fa;
+      color:#302127;
+      backface-visibility:hidden;
+      box-shadow:inset 0 0 0 1px rgba(115,58,88,0.08);
+    }
+
+    [data-theme="dark"] .turn-face{
+      background:#312733;
+      color:#f6edf2;
+    }
+
+    .turn-face.back{
+      transform:rotateY(180deg);
+    }
+
+    .turn-face .book-content{
+      max-height:280px;
+    }
+
+    .book-page-turner.forward .turn-face.front{
+      box-shadow:inset -14px 0 24px rgba(0,0,0,0.16);
+    }
+
+    .book-page-turner.forward .turn-face.back{
+      box-shadow:inset 14px 0 24px rgba(0,0,0,0.16);
+    }
+
+    .book-page-turner.backward .turn-face.front{
+      box-shadow:inset 14px 0 24px rgba(0,0,0,0.16);
+    }
+
+    .book-page-turner.backward .turn-face.back{
+      box-shadow:inset -14px 0 24px rgba(0,0,0,0.16);
     }
 
     .book-spread.turning::after{
@@ -1164,6 +1240,18 @@
       0%{ opacity:0; transform:scaleX(0.65) rotateY(0deg); }
       46%{ opacity:0.82; transform:scaleX(1) rotateY(22deg); }
       100%{ opacity:0; transform:scaleX(0.7) rotateY(0deg); }
+    }
+
+    @keyframes leafFlipForward{
+      0%{ transform:rotateY(0deg); filter:drop-shadow(0 0 0 rgba(0,0,0,0)); }
+      42%{ filter:drop-shadow(-14px 8px 18px rgba(38,20,32,0.32)); }
+      100%{ transform:rotateY(-180deg); filter:drop-shadow(-2px 0 8px rgba(0,0,0,0.2)); }
+    }
+
+    @keyframes leafFlipBackward{
+      0%{ transform:rotateY(0deg); filter:drop-shadow(0 0 0 rgba(0,0,0,0)); }
+      42%{ filter:drop-shadow(14px 8px 18px rgba(38,20,32,0.32)); }
+      100%{ transform:rotateY(180deg); filter:drop-shadow(2px 0 8px rgba(0,0,0,0.2)); }
     }
 
     .book-meta{
@@ -1682,6 +1770,18 @@
                 <div class="book-meta" id="bookRightMeta"></div>
                 <div class="book-title" id="bookRightTitle"></div>
                 <div class="book-content" id="bookRightContent"></div>
+              </div>
+              <div class="book-page-turner" id="bookPageTurner" aria-hidden="true">
+                <div class="turn-face front">
+                  <div class="book-meta" id="turnFaceFrontMeta"></div>
+                  <div class="book-title" id="turnFaceFrontTitle"></div>
+                  <div class="book-content" id="turnFaceFrontContent"></div>
+                </div>
+                <div class="turn-face back">
+                  <div class="book-meta" id="turnFaceBackMeta"></div>
+                  <div class="book-title" id="turnFaceBackTitle"></div>
+                  <div class="book-content" id="turnFaceBackContent"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -2296,6 +2396,8 @@
     let activeNotebookId = null;
     let bookPageIndex = 0;
     let isBookOpen = false;
+    let isBookAnimating = false;
+    const BOOK_TURN_MS = 940;
 
     function openNotebookView(notebookId){
       activeNotebookId = notebookId;
@@ -2374,6 +2476,46 @@
       isBookOpen = false;
       qs('#bookCoverScreen').style.display = 'flex';
       qs('#bookSpread').style.display = 'none';
+      clearPageTurner();
+    }
+
+    function populateTurnFace(prefix, note, displayIndex, total){
+      const title = qs(`#${prefix}Title`);
+      const content = qs(`#${prefix}Content`);
+      const meta = qs(`#${prefix}Meta`);
+      if(!title || !content || !meta) return;
+      if(!note){
+        title.textContent = 'Hoja disponible';
+        content.innerHTML = '<p class="book-empty">Esta hoja está libre para tu próxima nota.</p>';
+        meta.textContent = '';
+        return;
+      }
+      title.textContent = note.title || 'Sin título';
+      content.innerHTML = note.content || '<p class="book-empty">Sin contenido.</p>';
+      meta.textContent = `Hoja ${displayIndex} de ${total} · ${new Date(note.updated).toLocaleDateString(getLocaleTag())}`;
+    }
+
+    function clearPageTurner(){
+      const turner = qs('#bookPageTurner');
+      if(!turner) return;
+      turner.classList.remove('active','forward','backward');
+    }
+
+    function animatePageTurn(direction, fromLeftNote, fromRightNote, toLeftNote, toRightNote, total){
+      const turner = qs('#bookPageTurner');
+      if(!turner) return;
+      clearPageTurner();
+      if(direction === 'forward'){
+        populateTurnFace('turnFaceFront', fromRightNote, bookPageIndex, total);
+        populateTurnFace('turnFaceBack', toLeftNote, Math.max(1, bookPageIndex + 1), total);
+        turner.classList.add('forward');
+      } else {
+        populateTurnFace('turnFaceFront', fromLeftNote, bookPageIndex + 1, total);
+        populateTurnFace('turnFaceBack', toRightNote, Math.max(1, bookPageIndex + 2), total);
+        turner.classList.add('backward');
+      }
+      requestAnimationFrame(()=>turner.classList.add('active'));
+      setTimeout(clearPageTurner, BOOK_TURN_MS + 30);
     }
 
     function animateBookSurfaceTransition(fromEl, toEl){
@@ -2389,9 +2531,10 @@
     }
 
     function openNotebookPages(){
+      if(isBookAnimating) return;
       isBookOpen = true;
       animateBookSurfaceTransition(qs('#bookCoverScreen'), qs('#bookSpread'));
-      updateBookPage('forward');
+      updateBookPage('initial');
     }
 
     function openBookMode(){
@@ -2407,6 +2550,7 @@
     function closeBookMode(){
       qs('#overlayBookMode').style.display='none';
       showBookCover();
+      isBookAnimating = false;
     }
 
     function fillBookLeaf(side, note, displayIndex, total){
@@ -2430,6 +2574,7 @@
     }
 
     function updateBookPage(direction='forward'){
+      if(isBookAnimating) return;
       const notes = getNotebookNotes(activeNotebookId);
       const spread = qs('#bookSpread');
       const nb = state.notebooks.find(n=>n.id===activeNotebookId);
@@ -2441,17 +2586,44 @@
         qs('#bookLeftContent').innerHTML = '<p class="book-empty">Agrega una nota para empezar tu libreta.</p>';
         qs('#bookRightTitle').textContent = 'Libreta lista';
         qs('#bookRightContent').innerHTML = '<p class="book-empty">Cada nota ocupará solo una hoja.</p>';
+        clearPageTurner();
         return;
       }
       const leftIndex = bookPageIndex;
       const rightIndex = bookPageIndex + 1;
-      fillBookLeaf('Left', notes[leftIndex], leftIndex + 1, notes.length);
-      fillBookLeaf('Right', notes[rightIndex], rightIndex + 1, notes.length);
+      const currentLeft = notes[leftIndex] || null;
+      const currentRight = notes[rightIndex] || null;
+      const targetPageIndex = direction === 'initial'
+        ? bookPageIndex
+        : (direction === 'back'
+          ? Math.max(0, bookPageIndex - 2)
+          : Math.min(Math.max(0, notes.length - 1), bookPageIndex + 2));
+      const normalizedTargetIndex = targetPageIndex % 2 === 0 ? targetPageIndex : targetPageIndex - 1;
+      const targetLeft = notes[normalizedTargetIndex] || null;
+      const targetRight = notes[normalizedTargetIndex + 1] || null;
+
+      const shouldAnimateTurn = direction !== 'initial';
+      if(shouldAnimateTurn){
+        isBookAnimating = true;
+        animatePageTurn(direction === 'back' ? 'backward' : 'forward', currentLeft, currentRight, targetLeft, targetRight, notes.length);
+      } else {
+        clearPageTurner();
+      }
+
+      fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
+      fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
       spread.classList.remove('flip-forward','flip-back','turning');
-      requestAnimationFrame(()=>{
-        spread.classList.add('turning', direction === 'back' ? 'flip-back' : 'flip-forward');
-        setTimeout(()=>spread.classList.remove('flip-forward','flip-back','turning'), 840);
-      });
+      if(shouldAnimateTurn){
+        requestAnimationFrame(()=>{
+          spread.classList.add('turning', direction === 'back' ? 'flip-back' : 'flip-forward');
+          setTimeout(()=>{
+            spread.classList.remove('flip-forward','flip-back','turning');
+            isBookAnimating = false;
+          }, BOOK_TURN_MS);
+        });
+      }
+
+      bookPageIndex = normalizedTargetIndex;
     }
 
     // --- Events and UI wiring ---
@@ -2486,15 +2658,14 @@
     qs('#tutorialClose').addEventListener('click', ()=>{ qs('#overlayTutorial').style.display='none'; localStorage.setItem(ONBOARDING_KEY, 'done'); });
     qs('#prevPageBtn').addEventListener('click', ()=>{
       const notes = getNotebookNotes(activeNotebookId);
-      if(notes.length === 0 || !isBookOpen) return;
-      bookPageIndex = Math.max(0, bookPageIndex - 2);
+      if(notes.length === 0 || !isBookOpen || isBookAnimating || bookPageIndex === 0) return;
       updateBookPage('back');
     });
     qs('#nextPageBtn').addEventListener('click', ()=>{
       const notes = getNotebookNotes(activeNotebookId);
-      if(notes.length === 0 || !isBookOpen) return;
-      bookPageIndex = Math.min(Math.max(0, notes.length - 1), bookPageIndex + 2);
-      if(bookPageIndex % 2 !== 0) bookPageIndex -= 1;
+      if(notes.length === 0 || !isBookOpen || isBookAnimating) return;
+      const maxIndex = notes.length <= 1 ? 0 : (notes.length % 2 === 0 ? notes.length - 2 : notes.length - 1);
+      if(bookPageIndex >= maxIndex) return;
       updateBookPage('forward');
     });
 
