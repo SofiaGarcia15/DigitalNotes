@@ -134,25 +134,12 @@
       color:#5a3d4b;
       font-weight:700;
       box-shadow:0 6px 18px rgba(195,107,133,0.12);
-      transition:transform .15s ease, box-shadow .2s ease;
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
-      line-height:1.1;
+      transition:transform .15s ease, box-shadow .2s ease
     }
 
     .btn:hover{
       transform:translateY(-3px)
     }
-
-
-    #importLabel{
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
-      font-weight:700;
-    }
-
 
     .btn:active,
     .toolbar button:active,
@@ -1212,13 +1199,13 @@
     .book-cover-screen{
       min-height:440px;
       border-radius:14px;
-      background:transparent;
+      background:linear-gradient(135deg,#f08aba,#d8689f);
       display:flex;
       flex-direction:column;
       align-items:center;
       justify-content:center;
       gap:16px;
-      box-shadow:none;
+      box-shadow:inset 0 0 0 8px rgba(255,255,255,0.08)
     }
 
     .book-cover-screen img{
@@ -2223,8 +2210,7 @@
         const el = document.createElement('div'); el.className='notebook';
         el.dataset.id = nb.id;
         const img = document.createElement('img');
-        const coverColor = encodeURIComponent(nb.coverColor || '#f08aba');
-        img.src = nb.cover || `data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"300\" height=\"400\"><rect width=\"100%\" height=\"100%\" fill=\"${coverColor}\"/></svg>`;
+        img.src = nb.cover || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400"><rect width="100%" height="100%" fill="%23f0f0f0"/></svg>';
         const dots = document.createElement('div'); dots.className='dots'; dots.textContent='⋮';
         const menu = document.createElement('div'); menu.className='menu';
         const editBtn = document.createElement('button'); editBtn.textContent='Editar portada';
@@ -2383,7 +2369,6 @@
       } else {
         coverFallback.style.display = 'flex';
         coverFallback.textContent = notebook?.name || 'Sin portada';
-        coverFallback.style.background = notebook?.coverColor || '#f08aba';
       }
       const bookBg = notebook?.bookBgImage ? `url(${notebook.bookBgImage}) center / cover no-repeat` : (notebook?.bookBgColor || notebook?.coverColor || 'linear-gradient(150deg,#ffcae3,#f7b7d8)');
       qs('#bookContainer').style.background = bookBg;
@@ -2560,9 +2545,14 @@
     }
 
     qs('#saveNote').addEventListener('click', async ()=>{
-      animateSaveButton('Guardando...', true);
-      await saveCurrentNote({ shouldClose:false });
-      animateSaveButton('Guardado ✔');
+      animateSaveButton('Guardando...');
+      try {
+        await saveCurrentNote({ shouldClose:false, throwOnError:true });
+        animateSaveButton('Guardado ✔');
+      } catch(error){
+        console.error('Error al guardar manualmente:', error);
+        animateSaveButton('Guardado ✔');
+      }
     });
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
     qs('#deleteNoteBtn').addEventListener('click', ()=>{
@@ -2742,34 +2732,30 @@
             updatedAt: serverTimestamp()
           };
 
-          try {
-            if(isNewNote){
-              const createdRef = await addDoc(notesCollectionRef, {
-                ...firestorePayload,
-                createdAt: serverTimestamp()
-              });
-              editingNote.id = createdRef.id;
-            } else {
-              const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
-              try {
-                await updateDoc(noteRef, firestorePayload);
-              } catch(error){
-                if(error?.code === 'not-found'){
-                  await setDoc(noteRef, {
-                    ...firestorePayload,
-                    createdAt: serverTimestamp()
-                  }, { merge:true });
-                } else {
-                  throw error;
-                }
+          if(isNewNote){
+            const createdRef = await addDoc(notesCollectionRef, {
+              ...firestorePayload,
+              createdAt: serverTimestamp()
+            });
+            editingNote.id = createdRef.id;
+          } else {
+            const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
+            try {
+              await updateDoc(noteRef, firestorePayload);
+            } catch(error){
+              if(error?.code === 'not-found'){
+                await setDoc(noteRef, {
+                  ...firestorePayload,
+                  createdAt: serverTimestamp()
+                }, { merge:true });
+              } else {
+                throw error;
               }
             }
-          } catch(error){
-            console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
           }
         }
 
-        await saveState();
+        await saveState({ throwOnError });
         renderNotes();
         refreshNotebookWorkspace();
         if(shouldClose){ editingNote=null; closeEditor(); }
@@ -2789,7 +2775,7 @@
         clearTimeout(autosaveTimer);
         autosaveTimer=setTimeout(async ()=>{
           try {
-            await saveCurrentNote({ shouldClose:false });
+            await saveCurrentNote({ shouldClose:false, throwOnError:true });
           } catch(error){
             console.error('Error en autoguardado:', error);
             animateSaveButton('Guardado ✔');
@@ -2859,7 +2845,7 @@
 
     // --- Export / Import ---
     qs('#exportBtn').addEventListener('click', ()=>{ const dataStr = JSON.stringify(state,null,2); const blob = new Blob([dataStr], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download='digital_notes.json'; a.click(); URL.revokeObjectURL(url); });
-    qs('#importFile').addEventListener('change', e=>{ const f = e.target.files[0]; if(!f)return; const reader = new FileReader(); reader.onload = async function(ev){ try{ state = normalizeState(JSON.parse(ev.target.result)); await saveState(); renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); }catch(err){ alert('Archivo inválido'); } finally { e.target.value=''; } }; reader.readAsText(f); });
+    qs('#importFile').addEventListener('change', e=>{ const f = e.target.files[0]; if(!f)return; const reader = new FileReader(); reader.onload = function(ev){ try{ state = JSON.parse(ev.target.result); saveState(); renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); }catch(err){ alert('Archivo inválido'); } }; reader.readAsText(f); });
 
     // --- Color panel behavior ---
     qs('#openColorPanel').addEventListener('click', ()=>{ qs('#colorPanel').style.display = qs('#colorPanel').style.display === 'none' ? 'block' : 'none'; });
@@ -3012,11 +2998,10 @@
     }
 
     qsa('.template-btn').forEach(btn=>{
-      btn.addEventListener('click', async ()=>{
+      btn.addEventListener('click', ()=>{
         const src = btn.dataset.template;
-        insertAssetBlock({ src, label:'Plantilla en la nota', width:'46%' , template:true });
-        await saveCurrentNote({shouldClose:false});
-        animateSaveButton('Guardado ✔');
+        insertAssetBlock({ src, label:'Plantilla en la nota', width:'58%' , template:true });
+        void saveCurrentNote({shouldClose:false});
         setTemplateSession(false);
       });
     });
@@ -3235,13 +3220,12 @@
       composedCanvas.height = templateCanvas.height;
       const composedCtx = composedCanvas.getContext('2d');
       const baseImage = new Image();
-      baseImage.onload = async ()=>{
+      baseImage.onload = ()=>{
         composedCtx.drawImage(baseImage, 0, 0, composedCanvas.width, composedCanvas.height);
         composedCtx.drawImage(templateCanvas, 0, 0, composedCanvas.width, composedCanvas.height);
         const dataUrl = composedCanvas.toDataURL('image/png');
-        insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'46%' , template:true });
-        await saveCurrentNote({shouldClose:false});
-        animateSaveButton('Guardado ✔');
+        insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'58%' , template:true });
+        void saveCurrentNote({shouldClose:false});
         overlayTemplateEditor.style.display = 'none';
       };
       baseImage.src = selectedTemplate;
@@ -3456,24 +3440,11 @@
     });
 
 
-    function updateFullscreenEditorVisibility(){
-      const isDesktopOrTablet = window.matchMedia('(min-width: 601px)').matches;
-      const btn = qs('#fullscreenEditorBtn');
-      btn.style.display = isDesktopOrTablet ? 'inline-flex' : 'none';
-      if(!isDesktopOrTablet){
-        qs('#editorModal').classList.remove('fullscreen');
-        btn.textContent = '⛶ Pantalla completa';
-      }
-    }
-
     qs('#fullscreenEditorBtn').addEventListener('click', ()=>{
       const modal = qs('#editorModal');
       modal.classList.toggle('fullscreen');
       qs('#fullscreenEditorBtn').textContent = modal.classList.contains('fullscreen') ? '🗗 Salir de pantalla completa' : '⛶ Pantalla completa';
     });
-
-    updateFullscreenEditorVisibility();
-    window.addEventListener('resize', updateFullscreenEditorVisibility);
 
     function openTemplatePreview(src){
       if(!src) return;
