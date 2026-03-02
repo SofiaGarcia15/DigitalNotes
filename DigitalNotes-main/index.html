@@ -2064,11 +2064,9 @@
       const trashRef = doc(firestoreDb, 'users', currentUser.id, 'trash', note.id);
       await setDoc(trashRef, {
         ...note,
-        notebookId: note.notebookId || note.notebook || null,
-        notebook: note.notebookId || note.notebook || null,
         deletedAt: note.deletedAt || Date.now(),
         updatedAt: serverTimestamp()
-      }, { merge:false });
+      }, { merge:true });
       const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', note.id);
       await deleteDoc(noteRef).catch(()=>{});
     }
@@ -2085,12 +2083,17 @@
       const firestoreDb = getFirebaseFirestoreDb();
       const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', note.id);
       await setDoc(noteRef, {
-        ...note,
-        notebookId: note.notebookId || note.notebook || null,
-        notebook: note.notebookId || note.notebook || null,
+        title: note.title || '',
+        content: note.content || '',
+        notebook: note.notebook,
+        created: note.created || Date.now(),
+        updated: note.updated || Date.now(),
+        bgColor: note.bgColor || null,
+        textColor: note.textColor || null,
+        fontFamily: note.fontFamily || null,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
-      }, { merge:false });
+      }, { merge:true });
       await removeTrashedNoteFromFirestore(note.id);
     }
 
@@ -2101,35 +2104,6 @@
         trash:[],
         darkMode:false
       };
-    }
-
-    function normalizeNote(note = {}, fallbackNotebookId){
-      const resolvedNotebookId = note.notebookId || note.notebook || fallbackNotebookId;
-      return {
-        id: note.id || generateId(),
-        title: note.title || '',
-        content: typeof note.content === 'string' ? note.content : '',
-        notebookId: resolvedNotebookId,
-        notebook: resolvedNotebookId,
-        fontFamily: note.fontFamily || null,
-        fontSize: note.fontSize || null,
-        textColor: note.textColor || null,
-        bgColor: note.bgColor || note.backgroundColor || null,
-        backgroundColor: note.backgroundColor || note.bgColor || null,
-        templateId: note.templateId || null,
-        images: Array.isArray(note.images) ? note.images : [],
-        created: note.created || note.createdAt || note.updated || Date.now(),
-        updated: note.updated || note.updatedAt || Date.now(),
-        ...note
-      };
-    }
-
-    function ensureDistinctCollections(nextState){
-      const trashIds = new Set(nextState.trash.map(note=>note.id));
-      nextState.notes = nextState.notes.filter(note=>!trashIds.has(note.id));
-      const noteIds = new Set(nextState.notes.map(note=>note.id));
-      nextState.trash = nextState.trash.filter(note=>!noteIds.has(note.id));
-      return nextState;
     }
 
     function normalizeState(rawState = {}){
@@ -2143,18 +2117,25 @@
         nextState.notebooks = [{id:generateId(),name:'General',cover:null,coverColor:'#f08aba'}];
       }
       nextState.notebooks = nextState.notebooks.map(nb=>({ coverColor:'#f08aba', bookBgColor:'#ffcae3', bookBgImage:null, ...nb }));
-      nextState.notes = nextState.notes.map(note=>normalizeNote(note, nextState.notebooks[0].id));
-      nextState.trash = nextState.trash.map(note=>({ deletedAt: note.deletedAt || Date.now(), ...normalizeNote(note, nextState.notebooks[0].id) }));
+      nextState.notes = nextState.notes.map(note=>({ created: note.created || note.updated || Date.now(), ...note }));
+      nextState.trash = nextState.trash.map(note=>({ created: note.created || note.updated || Date.now(), deletedAt: note.deletedAt || Date.now(), ...note }));
       const fallbackNotebookId = nextState.notebooks[0].id;
-      nextState.notes = nextState.notes.map(note=>{
-        const notebookId = nextState.notebooks.some(nb=>nb.id===note.notebookId) ? note.notebookId : fallbackNotebookId;
-        return { ...note, notebookId, notebook:notebookId };
-      });
-      nextState.trash = nextState.trash.map(note=>{
-        const notebookId = nextState.notebooks.some(nb=>nb.id===note.notebookId) ? note.notebookId : fallbackNotebookId;
-        return { ...note, notebookId, notebook:notebookId };
-      });
-      return ensureDistinctCollections(nextState);
+      nextState.notes = nextState.notes.map(note=>({
+        ...note,
+        notebook: nextState.notebooks.some(nb=>nb.id===note.notebook) ? note.notebook : fallbackNotebookId
+      }));
+      nextState.trash = nextState.trash.map(note=>({
+        ...note,
+        notebook: nextState.notebooks.some(nb=>nb.id===note.notebook) ? note.notebook : fallbackNotebookId
+      }));
+      const trashedIds = new Set(nextState.trash.map(note=>note.id));
+      nextState.notes = nextState.notes.filter(note=>!trashedIds.has(note.id));
+      return nextState;
+    }
+
+    function getRenderableNotes(){
+      const trashedIds = new Set(state.trash.map(n=>n.id));
+      return state.notes.filter(note=>!trashedIds.has(note.id));
     }
 
     function stopNotesSync(){
@@ -2176,7 +2157,6 @@
 
     async function syncStateToFirestore(){
       if(!currentUser || isApplyingRemoteState) return;
-      ensureDistinctCollections(state);
       const firestoreDb = getFirebaseFirestoreDb();
       await setDoc(doc(firestoreDb, 'notes', currentUser.id), {
         userId: currentUser.id,
@@ -2470,8 +2450,8 @@
       const filterId = qs('#filterNotebook').value;
       const searchVal = qs('#searchInput').value.toLowerCase();
       const knownNotebookIds = new Set(state.notebooks.map(nb=>nb.id));
-      const notesToRender = state.notes.filter(n=>{
-        const effectiveNotebook = knownNotebookIds.has(n.notebookId) ? n.notebookId : state.notebooks[0]?.id;
+      const notesToRender = getRenderableNotes().filter(n=>{
+        const effectiveNotebook = knownNotebookIds.has(n.notebook) ? n.notebook : state.notebooks[0]?.id;
         const matchNotebook = filterId==='all'||effectiveNotebook===filterId;
         const matchSearch = !searchVal || (stripHtml(n.content).toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal));
         return matchNotebook && matchSearch;
@@ -2511,7 +2491,7 @@
     }
 
     function getNotebookNotes(notebookId){
-      return state.notes.filter(n=>n.notebookId===notebookId).sort((a,b)=>a.created - b.created);
+      return getRenderableNotes().filter(n=>n.notebook===notebookId).sort((a,b)=>a.created - b.created);
     }
 
     let activeNotebookId = null;
@@ -2750,7 +2730,6 @@
             fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
             fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
             spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
-            bookPageIndex = normalizedTargetIndex;
             isBookAnimating = false;
           }, BOOK_TURN_MS);
         });
@@ -2761,9 +2740,7 @@
         fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
       }
 
-      if(!shouldAnimateTurn){
-        bookPageIndex = normalizedTargetIndex;
-      }
+      bookPageIndex = normalizedTargetIndex;
     }
 
     // --- Events and UI wiring ---
@@ -2815,54 +2792,6 @@
     let currentFontFamily = '';
     let noteSaveInFlight = null;
     let pendingNoteSave = false;
-    let editorVisualState = {
-      backgroundColor: null,
-      textColor: null,
-      fontFamily: null,
-      fontSize: null,
-      templateId: null
-    };
-
-    function getEditorFontSize(){
-      return qs('#editor').style.fontSize || editorVisualState.fontSize || null;
-    }
-
-    function getImagesFromHtml(html = ''){
-      const div = document.createElement('div');
-      div.innerHTML = html;
-      return [...div.querySelectorAll('img')].map(img=>img.getAttribute('src')).filter(Boolean);
-    }
-
-    function buildNotePayloadForSave(noteId, createdAt){
-      const title = qs('#noteTitle').value;
-      const content = qs('#editor').innerHTML;
-      const notebookId = qs('#editorNotebook').value || state.notebooks[0].id;
-      const now = Date.now();
-      const backgroundColor = editorVisualState.backgroundColor;
-      const textColor = editorVisualState.textColor;
-      const fontFamily = currentFontFamily || editorVisualState.fontFamily || null;
-      const fontSize = getEditorFontSize();
-      const images = getImagesFromHtml(content);
-      return {
-        id: noteId,
-        title,
-        content,
-        notebookId,
-        notebook: notebookId,
-        fontFamily,
-        fontSize,
-        textColor,
-        bgColor: backgroundColor,
-        backgroundColor,
-        templateId: editorVisualState.templateId || null,
-        images,
-        created: createdAt,
-        updated: now,
-        createdAt: createdAt,
-        updatedAt: now
-      };
-    }
-
     function openEditor(note=null){
       editingNote = note;
       qs('#overlayEditor').style.display='flex';
@@ -2879,26 +2808,18 @@
       qs('#saveNote').classList.remove('saving','saved','error');
       qs('#editorModal').classList.remove('fullscreen');
       qs('#fullscreenEditorBtn').textContent = '⛶ Pantalla completa';
-      editorVisualState = {
-        backgroundColor: note?.backgroundColor || note?.bgColor || null,
-        textColor: note?.textColor || null,
-        fontFamily: note?.fontFamily || null,
-        fontSize: note?.fontSize || null,
-        templateId: note?.templateId || null
-      };
+      qs('#editor').focus();
+      // set current colors preview
       if(note){
-        if(editorVisualState.backgroundColor) qs('#colorPreview').style.background = editorVisualState.backgroundColor;
-        qs('#editor').style.background = editorVisualState.backgroundColor || '';
-        qs('#editor').style.color = editorVisualState.textColor || '';
-        qs('#editor').style.fontSize = editorVisualState.fontSize || '';
-        if(editorVisualState.textColor) qs('#textColorToolPicker').value = editorVisualState.textColor;
+        if(note.bgColor) qs('#colorPreview').style.background = note.bgColor;
+        qs('#editor').style.background = note.bgColor || '';
+        qs('#editor').style.color = note.textColor || '';
+        if(note.textColor) qs('#textColorToolPicker').value = note.textColor;
       } else {
         qs('#colorPreview').style.background = '';
         qs('#editor').style.background = '';
         qs('#editor').style.color = '';
-        qs('#editor').style.fontSize = '';
       }
-      qs('#editor').focus();
     }
     function closeEditor(){
       qs('#overlayEditor').style.display='none';
@@ -3069,38 +2990,73 @@
       }
 
       const run = async ()=>{
+        const title = qs('#noteTitle').value;
+        const content = qs('#editor').innerHTML;
+        const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
+        const editorStyles = window.getComputedStyle(qs('#editor'));
+        const editorBgColor = qs('#editor').style.background || editorStyles.backgroundColor || null;
+        const editorTextColor = qs('#editor').style.color || editorStyles.color || null;
+        const normalizedBg = editorBgColor && editorBgColor !== 'rgba(0, 0, 0, 0)' ? editorBgColor : null;
+        const normalizedText = editorTextColor && editorTextColor !== 'rgba(0, 0, 0, 0)' ? editorTextColor : null;
         const now = Date.now();
         const isNewNote = !editingNote;
-        const noteId = editingNote?.id || generateId();
-        const createdAt = editingNote?.created || editingNote?.createdAt || now;
-        const fullNotePayload = buildNotePayloadForSave(noteId, createdAt);
-
         if(editingNote){
-          Object.assign(editingNote, fullNotePayload);
+          editingNote.title=title;
+          editingNote.content=content;
+          editingNote.notebook=notebook;
+          editingNote.bgColor = normalizedBg;
+          editingNote.textColor = normalizedText;
+          editingNote.fontFamily = currentFontFamily || null;
+          editingNote.updated=now;
         } else {
-          editingNote = fullNotePayload;
-          state.notes.push(editingNote);
+          const newNote = {
+            id:generateId(),
+            title,
+            content,
+            notebook,
+            updated:now,
+            created:now,
+            bgColor:normalizedBg,
+            textColor:normalizedText,
+            fontFamily:currentFontFamily || null
+          };
+          state.notes.push(newNote);
+          editingNote = newNote;
         }
-
-        state.notes = state.notes.filter(note=>note.id!==editingNote.id || note===editingNote);
-        state.trash = state.trash.filter(note=>note.id!==editingNote.id);
 
         if(currentUser){
           const firestoreDb = getFirebaseFirestoreDb();
           const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
+          const firestorePayload = {
+            title: editingNote.title,
+            content: editingNote.content,
+            notebook: editingNote.notebook,
+            created: editingNote.created,
+            updated: editingNote.updated,
+            bgColor: editingNote.bgColor || null,
+            textColor: editingNote.textColor || null,
+            fontFamily: editingNote.fontFamily || null,
+            updatedAt: serverTimestamp()
+          };
+
           try {
-            await setDoc(noteRef, {
-              ...fullNotePayload,
-              createdAt: isNewNote ? serverTimestamp() : editingNote.createdAt || serverTimestamp(),
-              updatedAt: serverTimestamp()
-            }, { merge:false });
+            if(isNewNote){
+              await setDoc(noteRef, {
+                ...firestorePayload,
+                createdAt: serverTimestamp()
+              }, { merge:false });
+            } else {
+              await setDoc(noteRef, {
+                ...firestorePayload,
+                createdAt: serverTimestamp()
+              }, { merge:false });
+            }
           } catch(error){
             console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
-            if(throwOnError) throw error;
           }
         }
 
-        await saveState({ throwOnError });
+        await saveState();
         renderNotes();
         refreshNotebookWorkspace();
         if(shouldClose){ editingNote=null; closeEditor(); }
@@ -3145,13 +3101,12 @@
     });
     async function deleteNotebook(id){
       if(!confirm('Eliminar libreta y mover sus notas a papelera. ¿Continuar?')) return;
-      const notebookNotes = state.notes.filter(n=>n.notebookId===id);
-      const remainingNotes = state.notes.filter(n=>n.notebookId!==id);
+      const notebookNotes = state.notes.filter(n=>n.notebook===id);
+      const remainingNotes = state.notes.filter(n=>n.notebook!==id);
       const trashed = notebookNotes.map(note=>({ ...note, deletedAt: Date.now() }));
       await Promise.all(trashed.map(note=>syncTrashedNoteToFirestore(note)));
       state.notes = remainingNotes;
       state.trash = [...state.trash.filter(t=>!notebookNotes.some(n=>n.id===t.id)), ...trashed];
-      ensureDistinctCollections(state);
       state.notebooks = state.notebooks.filter(nb=>nb.id!==id);
       await saveState();
       renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); renderTrash();
@@ -3163,9 +3118,9 @@
       editorSel.innerHTML='';
       state.notebooks.forEach(nb=>{ const o1=document.createElement('option'); o1.value=nb.id; o1.textContent=nb.name; sel.appendChild(o1); const o2=o1.cloneNode(true); editorSel.appendChild(o2); });
     }
-    function populateEditorNotebook(){ populateNotebookFilters(); if(editingNote) qs('#editorNotebook').value = editingNote.notebookId; }
+    function populateEditorNotebook(){ populateNotebookFilters(); if(editingNote) qs('#editorNotebook').value = editingNote.notebook; }
 
-    function moveNoteToNotebook(noteId, nbId){ const note = state.notes.find(n=>n.id===noteId); if(note){ note.notebookId=nbId; note.notebook=nbId; saveState(); renderNotes(); refreshNotebookWorkspace(); } }
+    function moveNoteToNotebook(noteId, nbId){ const note = state.notes.find(n=>n.id===noteId); if(note){ note.notebook=nbId; saveState(); renderNotes(); refreshNotebookWorkspace(); } }
 
 
     async function moveNoteToTrash(noteId){
@@ -3175,7 +3130,6 @@
       state.trash = state.trash.filter(n=>n.id!==noteId);
       const trashedNote = { ...note, deletedAt: Date.now() };
       state.trash.push(trashedNote);
-      ensureDistinctCollections(state);
       await syncTrashedNoteToFirestore(trashedNote);
       await saveState();
       renderNotes();
@@ -3192,13 +3146,11 @@
       state.trash = state.trash.filter(n=>n.id!==noteId);
       const restored = { ...note };
       delete restored.deletedAt;
-      if(!state.notebooks.some(nb=>nb.id===restored.notebookId)){
-        restored.notebookId = state.notebooks[0]?.id;
-        restored.notebook = restored.notebookId;
+      if(!state.notebooks.some(nb=>nb.id===restored.notebook)){
+        restored.notebook = state.notebooks[0]?.id;
       }
       state.notes = state.notes.filter(n=>n.id!==noteId);
       state.notes.push(restored);
-      ensureDistinctCollections(state);
       await syncRestoredNoteToFirestore(restored);
       await saveState();
       renderNotes();
@@ -3304,7 +3256,10 @@
 
     qs('#applyBgColor').addEventListener('click', ()=>{
       const bg = qs('#colorPreview').style.background;
-      editorVisualState.backgroundColor = bg;
+      if(editingNote) { editingNote.bgColor=bg; } else {
+        // apply to new note preview inside editor
+      }
+      // apply to editor background for visual feedback
       qs('#editor').style.background = bg;
     });
 
@@ -3314,8 +3269,6 @@
     qs('#textColorToolPicker').addEventListener('input', (e)=>{
       const color = e.target.value;
       document.execCommand('foreColor', false, color);
-      editorVisualState.textColor = color;
-      qs('#editor').style.color = color;
       qs('#editor').focus();
     });
 
@@ -3325,7 +3278,7 @@
       const container = qs('#quickPalette'); container.innerHTML='';
       quickColors.forEach(c=>{
         const btn = document.createElement('button'); btn.style.background=c;
-        btn.addEventListener('click', ()=>{ qs('#editor').style.background=c; editorVisualState.backgroundColor=c; });
+        btn.addEventListener('click', ()=>{ qs('#editor').style.background=c; if(editingNote) editingNote.bgColor=c;  });
         container.appendChild(btn);
       });
     }
@@ -3381,8 +3334,6 @@
     function changeSelectionFontSize(step){
       const size = step > 0 ? 5 : 2;
       document.execCommand('fontSize', false, size);
-      const computedSize = window.getComputedStyle(qs('#editor')).fontSize;
-      editorVisualState.fontSize = computedSize || null;
       qs('#editor').focus();
     }
 
@@ -3401,7 +3352,7 @@
         sw.title = color;
         sw.addEventListener('click', ()=>{
           qs('#editor').style.background = color;
-          editorVisualState.backgroundColor = color;
+          if(editingNote) editingNote.bgColor = color;
             });
         wrap.appendChild(sw);
       });
@@ -3724,7 +3675,6 @@
 
     qs('#fontSelect').addEventListener('change', (e)=>{
       currentFontFamily = e.target.value || '';
-      editorVisualState.fontFamily = currentFontFamily || null;
       if(currentFontFamily){
         document.execCommand('fontName', false, currentFontFamily);
       }
@@ -3736,7 +3686,7 @@
     qs('#emojiBtn').addEventListener('click', ()=>{
       const value = prompt('Escribe o pega un emoji para insertarlo:');
       if(!value) return;
-      insertHtmlAtCursor(`${value} `);
+      insertHtmlAtCursor(`${value.trim()} `);
     });
 
     qs('#applyHighlight').addEventListener('click', ()=>{
