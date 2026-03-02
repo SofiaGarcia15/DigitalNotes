@@ -1077,12 +1077,6 @@
       opacity:1;
     }
 
-
-    .book-spread.turning-forward #bookRightPage,
-    .book-spread.turning-back #bookLeftPage{
-      visibility:hidden;
-    }
-
     .book-spread::before{
       content:'';
       position:absolute;
@@ -2021,7 +2015,6 @@
     let autosaveTimer = null;
     let autosaveObserver = null;
     let autosaveBoundHandlers = null;
-    let hasUnsavedEditorChanges = false;
     const AUTOSAVE_DEBOUNCE_MS = 1000;
 
     function isFirebaseConfigured(){
@@ -2765,10 +2758,7 @@
         qs('#editor').style.color = '';
       }
     }
-    function closeEditor({ persist=true } = {}){
-      if(persist && hasUnsavedEditorChanges){
-        queueAutosave({ force:true });
-      }
+    function closeEditor(){
       qs('#overlayEditor').style.display='none';
       clearTimeout(autosaveTimer);
       if(autosaveObserver){
@@ -3012,8 +3002,7 @@
         await saveState();
         renderNotes();
         refreshNotebookWorkspace();
-        hasUnsavedEditorChanges = false;
-        if(shouldClose){ editingNote=null; closeEditor({ persist:false }); }
+        if(shouldClose){ editingNote=null; closeEditor(); }
       };
 
       noteSaveInFlight = run();
@@ -3026,7 +3015,6 @@
 
     function queueAutosave({ force=false } = {}){
       if(qs('#overlayEditor').style.display !== 'flex') return;
-      hasUnsavedEditorChanges = true;
       clearTimeout(autosaveTimer);
 
       const runSave = async ()=>{
@@ -3558,7 +3546,6 @@
         qs('#editor').focus();
         document.execCommand(btn.dataset.cmd, false, null);
         qs('#editor').focus();
-        queueAutosave();
       });
     });
 
@@ -3569,7 +3556,6 @@
         qs('#editor').focus();
         document.execCommand(cmd, false, null);
         qs('#editor').focus();
-        queueAutosave();
       });
     });
 
@@ -3612,7 +3598,6 @@
       const color = qs('#highlightColor').value;
       document.execCommand('hiliteColor', false, color);
       qs('#editor').focus();
-      queueAutosave();
     });
 
     qs('#insertChecklist').addEventListener('click', ()=>{
@@ -3802,7 +3787,7 @@
     // --- Utility: close overlays when clicking outside modal content ---
     document.querySelectorAll('.overlay').forEach(ov=>{
       ov.addEventListener('click', e=>{
-        if(e.target === ov){ if(ov.id === 'overlayEditor'){ closeEditor(); } else { ov.style.display='none'; editingNote=null; } }
+        if(e.target === ov){ ov.style.display='none'; editingNote=null; }
       });
     });
 
@@ -3828,19 +3813,6 @@
       qs('#overlayTutorial').style.display='flex';
       await requestMultimediaAccess();
     }
-
-
-    document.addEventListener('visibilitychange', ()=>{
-      if(document.visibilityState === 'hidden' && qs('#overlayEditor').style.display === 'flex' && hasUnsavedEditorChanges){
-        queueAutosave({ force:true });
-      }
-    });
-
-    window.addEventListener('pagehide', ()=>{
-      if(qs('#overlayEditor').style.display === 'flex' && hasUnsavedEditorChanges){
-        queueAutosave({ force:true });
-      }
-    });
 
     // --- Init ---
     async function init(){
