@@ -2145,11 +2145,6 @@
       nextState.notebooks = nextState.notebooks.map(nb=>({ coverColor:'#f08aba', bookBgColor:'#ffcae3', bookBgImage:null, ...nb }));
       nextState.notes = nextState.notes.map(note=>normalizeNote(note, nextState.notebooks[0].id));
       nextState.trash = nextState.trash.map(note=>({ deletedAt: note.deletedAt || Date.now(), ...normalizeNote(note, nextState.notebooks[0].id) }));
-      const softDeletedNotes = nextState.notes.filter(note=>Boolean(note.deletedAt));
-      if(softDeletedNotes.length){
-        nextState.notes = nextState.notes.filter(note=>!note.deletedAt);
-        nextState.trash = [...nextState.trash, ...softDeletedNotes.map(note=>({ ...note, deletedAt: note.deletedAt || Date.now() }))];
-      }
       const fallbackNotebookId = nextState.notebooks[0].id;
       nextState.notes = nextState.notes.map(note=>{
         const notebookId = nextState.notebooks.some(nb=>nb.id===note.notebookId) ? note.notebookId : fallbackNotebookId;
@@ -2476,7 +2471,6 @@
       const searchVal = qs('#searchInput').value.toLowerCase();
       const knownNotebookIds = new Set(state.notebooks.map(nb=>nb.id));
       const notesToRender = state.notes.filter(n=>{
-        if(n.deletedAt) return false;
         const effectiveNotebook = knownNotebookIds.has(n.notebookId) ? n.notebookId : state.notebooks[0]?.id;
         const matchNotebook = filterId==='all'||effectiveNotebook===filterId;
         const matchSearch = !searchVal || (stripHtml(n.content).toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal));
@@ -2517,7 +2511,7 @@
     }
 
     function getNotebookNotes(notebookId){
-      return state.notes.filter(n=>n.notebookId===notebookId && !n.deletedAt).sort((a,b)=>a.created - b.created);
+      return state.notes.filter(n=>n.notebookId===notebookId).sort((a,b)=>a.created - b.created);
     }
 
     let activeNotebookId = null;
@@ -2613,25 +2607,16 @@
       const title = qs(`#${prefix}Title`);
       const content = qs(`#${prefix}Content`);
       const meta = qs(`#${prefix}Meta`);
-      const face = title?.closest('.turn-face');
       if(!title || !content || !meta) return;
       if(!note){
         title.textContent = 'Hoja disponible';
         content.innerHTML = '<p class="book-empty">Esta hoja está libre para tu próxima nota.</p>';
         meta.textContent = '';
-        if(face){
-          face.style.background = '#f6ecd2';
-          face.style.color = '';
-        }
         return;
       }
       title.textContent = note.title || 'Sin título';
       content.innerHTML = note.content || '<p class="book-empty">Sin contenido.</p>';
       meta.textContent = `Hoja ${displayIndex} de ${total} · ${new Date(note.updated).toLocaleDateString(getLocaleTag())}`;
-      if(face){
-        face.style.background = note.bgColor || '#f6ecd2';
-        face.style.color = note.textColor || '';
-      }
     }
 
     function clearPageTurner(){
