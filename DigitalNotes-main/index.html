@@ -1085,7 +1085,8 @@
 
     .book-spread.turning-forward #bookRightPage,
     .book-spread.turning-back #bookLeftPage{
-      visibility:hidden;
+      opacity:0.35;
+      transition:opacity 200ms ease;
     }
 
     .book-spread::before{
@@ -1141,7 +1142,8 @@
       z-index:8;
       pointer-events:none;
       transform-style:preserve-3d;
-      display:none;
+      display:block;
+      opacity:0;
     }
 
     .book-page-turner.forward{
@@ -1155,7 +1157,7 @@
     }
 
     .book-page-turner.active{
-      display:block;
+      opacity:1;
     }
 
     .book-page-turner.forward.active{
@@ -1278,12 +1280,16 @@
 
     @keyframes leafFlipForward{
       0%{ transform:rotateY(0deg); filter:drop-shadow(0 0 0 rgba(0,0,0,0)); }
+      28%{ transform:rotateY(-48deg); }
+      58%{ transform:rotateY(-124deg); }
       42%{ filter:drop-shadow(-14px 8px 18px rgba(38,20,32,0.32)); }
       100%{ transform:rotateY(-180deg); filter:drop-shadow(-2px 0 8px rgba(0,0,0,0.2)); }
     }
 
     @keyframes leafFlipBackward{
       0%{ transform:rotateY(0deg); filter:drop-shadow(0 0 0 rgba(0,0,0,0)); }
+      28%{ transform:rotateY(48deg); }
+      58%{ transform:rotateY(124deg); }
       42%{ filter:drop-shadow(14px 8px 18px rgba(38,20,32,0.32)); }
       100%{ transform:rotateY(180deg); filter:drop-shadow(2px 0 8px rgba(0,0,0,0.2)); }
     }
@@ -1978,7 +1984,7 @@
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
     import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, addDoc, updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -2122,7 +2128,14 @@
         ...note,
         notebook: nextState.notebooks.some(nb=>nb.id===note.notebook) ? note.notebook : fallbackNotebookId
       }));
+      const trashedIds = new Set(nextState.trash.map(note=>note.id));
+      nextState.notes = nextState.notes.filter(note=>!trashedIds.has(note.id));
       return nextState;
+    }
+
+    function getRenderableNotes(){
+      const trashedIds = new Set(state.trash.map(n=>n.id));
+      return state.notes.filter(note=>!trashedIds.has(note.id));
     }
 
     function stopNotesSync(){
@@ -2437,7 +2450,7 @@
       const filterId = qs('#filterNotebook').value;
       const searchVal = qs('#searchInput').value.toLowerCase();
       const knownNotebookIds = new Set(state.notebooks.map(nb=>nb.id));
-      const notesToRender = state.notes.filter(n=>{
+      const notesToRender = getRenderableNotes().filter(n=>{
         const effectiveNotebook = knownNotebookIds.has(n.notebook) ? n.notebook : state.notebooks[0]?.id;
         const matchNotebook = filterId==='all'||effectiveNotebook===filterId;
         const matchSearch = !searchVal || (stripHtml(n.content).toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal));
@@ -2478,7 +2491,7 @@
     }
 
     function getNotebookNotes(notebookId){
-      return state.notes.filter(n=>n.notebook===notebookId).sort((a,b)=>a.created - b.created);
+      return getRenderableNotes().filter(n=>n.notebook===notebookId).sort((a,b)=>a.created - b.created);
     }
 
     let activeNotebookId = null;
@@ -2980,22 +2993,40 @@
         const title = qs('#noteTitle').value;
         const content = qs('#editor').innerHTML;
         const notebook = qs('#editorNotebook').value || state.notebooks[0].id;
+        const editorStyles = window.getComputedStyle(qs('#editor'));
+        const editorBgColor = qs('#editor').style.background || editorStyles.backgroundColor || null;
+        const editorTextColor = qs('#editor').style.color || editorStyles.color || null;
+        const normalizedBg = editorBgColor && editorBgColor !== 'rgba(0, 0, 0, 0)' ? editorBgColor : null;
+        const normalizedText = editorTextColor && editorTextColor !== 'rgba(0, 0, 0, 0)' ? editorTextColor : null;
+        const now = Date.now();
         const isNewNote = !editingNote;
         if(editingNote){
           editingNote.title=title;
           editingNote.content=content;
           editingNote.notebook=notebook;
+          editingNote.bgColor = normalizedBg;
+          editingNote.textColor = normalizedText;
           editingNote.fontFamily = currentFontFamily || null;
-          editingNote.updated=Date.now();
+          editingNote.updated=now;
         } else {
-          const newNote = {id:generateId(),title,content,notebook,updated:Date.now(), created:Date.now(), bgColor:null, textColor:null, fontFamily:currentFontFamily || null};
+          const newNote = {
+            id:generateId(),
+            title,
+            content,
+            notebook,
+            updated:now,
+            created:now,
+            bgColor:normalizedBg,
+            textColor:normalizedText,
+            fontFamily:currentFontFamily || null
+          };
           state.notes.push(newNote);
           editingNote = newNote;
         }
 
         if(currentUser){
           const firestoreDb = getFirebaseFirestoreDb();
-          const notesCollectionRef = collection(firestoreDb, 'users', currentUser.id, 'notes');
+          const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
           const firestorePayload = {
             title: editingNote.title,
             content: editingNote.content,
@@ -3010,25 +3041,15 @@
 
           try {
             if(isNewNote){
-              const createdRef = await addDoc(notesCollectionRef, {
+              await setDoc(noteRef, {
                 ...firestorePayload,
                 createdAt: serverTimestamp()
-              });
-              editingNote.id = createdRef.id;
+              }, { merge:false });
             } else {
-              const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
-              try {
-                await updateDoc(noteRef, firestorePayload);
-              } catch(error){
-                if(error?.code === 'not-found'){
-                  await setDoc(noteRef, {
-                    ...firestorePayload,
-                    createdAt: serverTimestamp()
-                  }, { merge:true });
-                } else {
-                  throw error;
-                }
-              }
+              await setDoc(noteRef, {
+                ...firestorePayload,
+                createdAt: serverTimestamp()
+              }, { merge:false });
             }
           } catch(error){
             console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
@@ -3114,6 +3135,9 @@
       renderNotes();
       refreshNotebookWorkspace();
       renderTrash();
+      if(editingNote?.id === noteId){
+        closeEditor();
+      }
     }
 
     async function restoreTrashedNote(noteId){
