@@ -115,24 +115,6 @@
       margin:18px 0
     }
 
-    .section-row{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:12px;
-      flex-wrap:wrap;
-    }
-
-    .save-indicator{
-      font-size:13px;
-      color:var(--muted);
-      opacity:0;
-      transition:opacity .18s ease;
-      min-height:18px;
-    }
-
-    .save-indicator.visible{opacity:1;}
-
     .controls{
       display:flex;
       gap:12px;
@@ -1552,7 +1534,7 @@
     }
   </style>
 </head>
-<body>
+<body class="auth-locked">
   <header>
     <div class="logo-area">
       <img src="logodn.index.png" alt="Logo" class="logo-img" />
@@ -1585,10 +1567,7 @@
 
   <main>
     <section id="view-notes">
-      <div class="section-row">
-        <h1 class="section">Notas recientes</h1>
-        <span id="recentSaveIndicator" class="save-indicator" aria-live="polite"></span>
-      </div>
+      <h1 class="section">Notas recientes</h1>
       <div class="controls">
         <label>Filtrar por libreta:
           <select id="filterNotebook"><option value="all">Todas</option></select>
@@ -1961,6 +1940,29 @@
     </div>
   </div>
 
+  <div class="auth-overlay" id="authOverlay">
+    <div class="auth-card">
+      <h1 id="authTitle">Crea una cuenta</h1>
+      <p><span id="authPrompt">¿Ya estás registrado/a?</span> <button id="toggleAuthMode" type="button">Inicia sesión</button></p>
+      <form id="authForm">
+        <label>NOMBRE
+          <input id="authName" type="text" placeholder="Tu nombre">
+        </label>
+        <label>EMAIL
+          <input id="email" type="email" placeholder="tu@email.com">
+        </label>
+        <label>CONTRASEÑA
+          <input id="password" type="password" placeholder="******">
+        </label>
+        <label>FECHA DE NACIMIENTO
+          <input id="birthdate" type="date">
+        </label>
+        <button id="registerBtn" type="button">Registrarse</button>
+      </form>
+      <p id="authMessage" style="min-height:24px;margin:12px 0 0;color:#fff;font-weight:700"></p>
+    </div>
+  </div>
+
   <div id="appToast" class="toast-msg" aria-live="polite"></div>
 
   <div class="icon-btn" id="fab" title="Agregar nota">
@@ -1981,7 +1983,7 @@
 
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
     import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     /* ---------------------------
@@ -2023,6 +2025,7 @@
     ];
 
 
+    let authMode = 'register';
     let currentUser = null;
     let firebaseAuth = null;
     let firebaseFirestoreDb = null;
@@ -2030,9 +2033,6 @@
     let isApplyingRemoteState = false;
     let saveStatusTimer = null;
     let isSaving = false;
-    let editorAutosaveTimer = null;
-    let editorLastSavedSnapshot = '';
-    let recentIndicatorTimer = null;
     let hasQueuedSave = false;
     let activeSavePromise = null;
 
@@ -2233,6 +2233,8 @@
         birth: ''
       };
       currentUser = user;
+      document.body.classList.remove('auth-locked');
+      qs('#authOverlay').style.display = 'none';
       qs('.logo-text').textContent = `Digital Notes 2026 · ${user.name}`;
       updateSettingsPanel();
       startNotesSync(user.id);
@@ -2268,8 +2270,79 @@
       const { silent = false } = options;
       stopNotesSync();
       currentUser = null;
+      document.body.classList.add('auth-locked');
+      qs('#authOverlay').style.display = 'flex';
       if(!silent) showToast('Sesión cerrada');
-      window.location.replace('login.html');
+      qs('.logo-text').textContent = 'Digital Notes 2026';
+      applyState(getDefaultState());
+    }
+
+    function updateAuthMode(){
+      const register = authMode === 'register';
+      qs('#authTitle').textContent = register ? 'Crea una cuenta' : 'Inicia sesión';
+      qs('#authPrompt').textContent = register ? '¿Ya estás registrado/a?' : '¿Aún no tienes cuenta?';
+      qs('#toggleAuthMode').textContent = register ? 'Inicia sesión' : 'Regístrate';
+      qs('#registerBtn').textContent = register ? 'Registrarse' : 'Entrar';
+      qs('#authName').parentElement.style.display = register ? 'block' : 'none';
+      qs('#birthdate').parentElement.style.display = register ? 'block' : 'none';
+      qs('#authMessage').textContent = '';
+    }
+
+    async function submitAuth(event){
+      event?.preventDefault();
+      const name = qs('#authName').value.trim();
+      const email = qs('#email').value.trim().toLowerCase();
+      const password = qs('#password').value;
+      const birth = qs('#birthdate').value;
+      const msg = qs('#authMessage');
+      const submitBtn = qs('#registerBtn');
+
+      if(!email || !password){
+        msg.textContent = 'Falta completar email y contraseña.';
+        return;
+      }
+
+      submitBtn.disabled = true;
+      try {
+        const auth = getFirebaseAuthInstance();
+        const firestoreDb = getFirebaseFirestoreDb();
+
+        if(authMode === 'register'){
+          if(!birth){
+            msg.textContent = 'Falta completar algún campo obligatorio.';
+            return;
+          }
+
+          const credential = await createUserWithEmailAndPassword(auth, email, password);
+          const firebaseUser = credential.user;
+          const profileName = name || email.split('@')[0];
+
+          await updateProfile(firebaseUser, { displayName: profileName });
+          await setDoc(doc(firestoreDb, 'users', firebaseUser.uid), {
+            uid: firebaseUser.uid,
+            email,
+            displayName: profileName,
+            birthdate: birth,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+
+          showWelcomeMessage({ name: profileName, email }, true);
+        } else {
+          const credential = await signInWithEmailAndPassword(auth, email, password);
+          showWelcomeMessage({
+            name: credential.user.displayName || credential.user.email,
+            email: credential.user.email || email
+          }, false);
+        }
+
+        msg.textContent = '';
+      } catch(error){
+        console.error('Error de Firebase en submitAuth:', error);
+        msg.textContent = mapFirebaseError(error);
+      } finally {
+        submitBtn.disabled = false;
+      }
     }
 
     async function syncSessionFromFirebaseUser(firebaseUser, options = {}){
@@ -2284,24 +2357,17 @@
     }
 
     async function bootstrapAuth(){
+      updateAuthMode();
+      qs('#toggleAuthMode').addEventListener('click', ()=>{ authMode = authMode === 'register' ? 'login' : 'register'; updateAuthMode(); });
+      qs('#registerBtn').addEventListener('click', submitAuth);
+
       try {
         const auth = getFirebaseAuthInstance();
-        await setPersistence(auth, browserLocalPersistence);
-        await new Promise((resolve, reject)=>{
-          const unsubscribe = onAuthStateChanged(auth, async user=>{
-            unsubscribe();
-            if(!user){
-              window.location.replace('login.html');
-              resolve();
-              return;
-            }
-            await syncSessionFromFirebaseUser(user, { silent:true });
-            resolve();
-          }, reject);
-        });
+
+        onAuthStateChanged(auth, user=>{ syncSessionFromFirebaseUser(user); });
       } catch(error){
         console.error('Error de Firebase en bootstrapAuth:', error);
-        window.location.replace('login.html');
+        qs('#authMessage').textContent = mapFirebaseError(error);
       }
     }
 
@@ -2847,12 +2913,9 @@
         qs('#editor').style.color = '';
         qs('#editor').style.fontSize = '';
       }
-      editorLastSavedSnapshot = buildEditorSnapshot();
       qs('#editor').focus();
     }
     function closeEditor(){
-      clearTimeout(editorAutosaveTimer);
-      setRecentSaveIndicator('');
       qs('#overlayEditor').style.display='none';
       editingNote=null;
     }
@@ -2879,13 +2942,6 @@
         animateSaveButton('Error al guardar');
       }
     });
-    qs('#editor').addEventListener('input', queueEditorAutosave);
-    qs('#noteTitle').addEventListener('input', queueEditorAutosave);
-    qs('#editorNotebook').addEventListener('change', queueEditorAutosave);
-
-    const editorMutationObserver = new MutationObserver(()=>queueEditorAutosave());
-    editorMutationObserver.observe(qs('#editor'), { childList:true, subtree:true, characterData:true, attributes:true });
-
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
     qs('#deleteNoteBtn').addEventListener('click', async ()=>{
       if(editingNote && confirm('¿Mover nota a papelera?')){
@@ -2990,45 +3046,6 @@
       }
     }
 
-    function setRecentSaveIndicator(message=''){
-      const indicator = qs('#recentSaveIndicator');
-      if(!indicator) return;
-      clearTimeout(recentIndicatorTimer);
-      if(!message){
-        indicator.classList.remove('visible');
-        indicator.textContent = '';
-        return;
-      }
-      indicator.textContent = message;
-      indicator.classList.add('visible');
-      recentIndicatorTimer = setTimeout(()=>{
-        indicator.classList.remove('visible');
-        indicator.textContent = '';
-      }, 1200);
-    }
-
-    function buildEditorSnapshot(){
-      const notebookId = qs('#editorNotebook').value || state.notebooks[0]?.id || '';
-      return JSON.stringify({
-        title: qs('#noteTitle').value,
-        content: qs('#editor').innerHTML,
-        notebookId,
-        visual: editorVisualState,
-        fontFamily: currentFontFamily || '',
-        fontSize: getEditorFontSize() || ''
-      });
-    }
-
-    function queueEditorAutosave(){
-      if(qs('#overlayEditor').style.display !== 'flex') return;
-      clearTimeout(editorAutosaveTimer);
-      editorAutosaveTimer = setTimeout(async ()=>{
-        if(buildEditorSnapshot() === editorLastSavedSnapshot) return;
-        setRecentSaveIndicator('Guardando...');
-        await saveCurrentNote({ shouldClose:false, throwOnError:false });
-      }, 1000);
-    }
-
     function animateSaveButton(message='Guardado ✔', keep=false){
       const btn = qs('#saveNote');
       clearTimeout(saveStatusTimer);
@@ -3099,10 +3116,8 @@
         }
 
         await saveState({ throwOnError });
-        editorLastSavedSnapshot = buildEditorSnapshot();
         renderNotes();
         refreshNotebookWorkspace();
-        setRecentSaveIndicator('');
         if(shouldClose){ editingNote=null; closeEditor(); }
       };
 
@@ -3914,7 +3929,6 @@
       try {
         const auth = getFirebaseAuthInstance();
         await signOut(auth);
-        await clearSession({ silent:true });
       } catch(error){
         console.error('Error al cerrar sesión en Firebase Auth:', error);
         showToast('No se pudo cerrar la sesión. Intenta nuevamente.');
@@ -3953,8 +3967,6 @@
 
     // --- Init ---
     async function init(){
-      await bootstrapAuth();
-      if(!currentUser) return;
       loadState();
       console.info(`Firebase project conectado: ${FIREBASE_CONFIG.projectId}`);
       renderNotebooks();
@@ -3962,9 +3974,11 @@
       renderTemplateGallery();
       renderTrash();
       showView('notes');
+      // ensure editor notebook select exists
       populateEditorNotebook();
       renderCompactPalette();
       maybeShowOnboarding();
+      await bootstrapAuth();
 
       qsa('button, .btn, .toolbar button, .icon-btn').forEach(el=>{
         el.addEventListener('click', ()=>animateTap(el));
