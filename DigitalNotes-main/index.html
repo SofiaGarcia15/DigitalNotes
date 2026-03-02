@@ -1074,7 +1074,6 @@
       z-index:1;
       pointer-events:none;
       opacity:0;
-      transition:opacity 180ms ease;
     }
 
     .book-underlay .book-leaf{
@@ -1140,7 +1139,9 @@
       z-index:8;
       pointer-events:none;
       transform-style:preserve-3d;
-      display:none;
+      display:block;
+      opacity:0;
+      visibility:hidden;
     }
 
     .book-page-turner.forward{
@@ -1154,7 +1155,8 @@
     }
 
     .book-page-turner.active{
-      display:block;
+      opacity:1;
+      visibility:visible;
     }
 
     .book-page-turner.forward.active{
@@ -2697,6 +2699,14 @@
     qs('#searchInput').addEventListener('input', renderNotes);
     qs('#closeEditor').addEventListener('click', ()=>{ void closeEditor(); });
     document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ void closeEditor(); qs('#overlayNotebook').style.display='none'; closeNotebookView(); closeBookMode(); closeCalendarModal(); } });
+    document.addEventListener('visibilitychange', ()=>{
+      if(document.visibilityState === 'hidden'){
+        flushAutosaveNow();
+      }
+    });
+    window.addEventListener('beforeunload', ()=>{
+      flushAutosaveNow();
+    });
     qs('#closeNotebookView').addEventListener('click', closeNotebookView);
     qs('#openBookModeInline').addEventListener('click', openBookMode);
     qs('#bookBgColor').addEventListener('input', async (e)=>{
@@ -3038,11 +3048,16 @@
       };
 
       if(force){
-        runSave();
+        void runSave();
         return;
       }
 
       autosaveTimer = setTimeout(runSave, AUTOSAVE_DEBOUNCE_MS);
+    }
+
+    function flushAutosaveNow(){
+      if(qs('#overlayEditor').style.display !== 'flex') return;
+      queueAutosave({ force:true });
     }
 
     function setupAutosave(){
@@ -3053,15 +3068,28 @@
 
       if(autosaveBoundHandlers){
         editor.removeEventListener('input', autosaveBoundHandlers.inputHandler);
+        editor.removeEventListener('keyup', autosaveBoundHandlers.inputHandler);
+        editor.removeEventListener('paste', autosaveBoundHandlers.inputHandler);
+        editor.removeEventListener('cut', autosaveBoundHandlers.inputHandler);
+        editor.removeEventListener('drop', autosaveBoundHandlers.inputHandler);
+        editor.removeEventListener('blur', autosaveBoundHandlers.flushHandler, true);
         titleEl.removeEventListener('input', autosaveBoundHandlers.inputHandler);
+        titleEl.removeEventListener('blur', autosaveBoundHandlers.flushHandler);
         notebookSelect.removeEventListener('change', autosaveBoundHandlers.changeHandler);
       }
 
       const inputHandler = ()=>queueAutosave();
       const changeHandler = ()=>queueAutosave();
-      autosaveBoundHandlers = { inputHandler, changeHandler };
+      const flushHandler = ()=>flushAutosaveNow();
+      autosaveBoundHandlers = { inputHandler, changeHandler, flushHandler };
       editor.addEventListener('input', inputHandler);
+      editor.addEventListener('keyup', inputHandler);
+      editor.addEventListener('paste', inputHandler);
+      editor.addEventListener('cut', inputHandler);
+      editor.addEventListener('drop', inputHandler);
+      editor.addEventListener('blur', flushHandler, true);
       titleEl.addEventListener('input', inputHandler);
+      titleEl.addEventListener('blur', flushHandler);
       notebookSelect.addEventListener('change', changeHandler);
 
       if(autosaveObserver){
@@ -3570,6 +3598,7 @@
         qs('#editor').focus();
         document.execCommand(btn.dataset.cmd, false, null);
         qs('#editor').focus();
+        flushAutosaveNow();
       });
     });
 
@@ -3580,6 +3609,7 @@
         qs('#editor').focus();
         document.execCommand(cmd, false, null);
         qs('#editor').focus();
+        flushAutosaveNow();
       });
     });
 
@@ -3622,6 +3652,7 @@
       const color = qs('#highlightColor').value;
       document.execCommand('hiliteColor', false, color);
       qs('#editor').focus();
+      flushAutosaveNow();
     });
 
     qs('#insertChecklist').addEventListener('click', ()=>{
