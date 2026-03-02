@@ -1066,6 +1066,27 @@
       perspective:1800px;
     }
 
+    .book-underlay{
+      position:absolute;
+      inset:0;
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      z-index:1;
+      pointer-events:none;
+      opacity:0;
+      transition:opacity 180ms ease;
+    }
+
+    .book-underlay .book-leaf{
+      border-radius:0;
+      box-shadow:inset 0 0 0 1px rgba(115,58,88,0.08);
+    }
+
+    .book-spread.turning-forward .book-underlay,
+    .book-spread.turning-back .book-underlay{
+      opacity:1;
+    }
+
     .book-spread::before{
       content:'';
       position:absolute;
@@ -1087,6 +1108,12 @@
       overflow:hidden;
       color:#302127;
       backface-visibility:hidden;
+      z-index:2;
+    }
+
+    .book-spread.turning-forward #bookRightPage,
+    .book-spread.turning-back #bookLeftPage{
+      visibility:hidden;
     }
 
     [data-theme="dark"] .book-leaf{
@@ -1771,6 +1798,18 @@
               <button id="openNotebookPages" class="btn">Abrir cuaderno</button>
             </div>
             <div class="book-spread" id="bookSpread" style="display:none">
+              <div class="book-underlay" id="bookUnderlay" aria-hidden="true">
+                <div class="book-leaf" id="bookUnderLeftPage">
+                  <div class="book-meta" id="bookUnderLeftMeta"></div>
+                  <div class="book-title" id="bookUnderLeftTitle"></div>
+                  <div class="book-content" id="bookUnderLeftContent"></div>
+                </div>
+                <div class="book-leaf" id="bookUnderRightPage">
+                  <div class="book-meta" id="bookUnderRightMeta"></div>
+                  <div class="book-title" id="bookUnderRightTitle"></div>
+                  <div class="book-content" id="bookUnderRightContent"></div>
+                </div>
+              </div>
               <div class="book-leaf" id="bookLeftPage">
                 <div class="book-meta" id="bookLeftMeta"></div>
                 <div class="book-title" id="bookLeftTitle"></div>
@@ -1988,6 +2027,9 @@
     let hasQueuedSave = false;
     let activeSavePromise = null;
     let autosaveTimer = null;
+    let autosaveObserver = null;
+    let autosaveBoundHandlers = null;
+    const AUTOSAVE_DEBOUNCE_MS = 1000;
 
     function isFirebaseConfigured(){
       return !Object.values(FIREBASE_CONFIG).some(value=>!value || value.includes('REEMPLAZA_CON_TU'));
@@ -2488,7 +2530,9 @@
     function showBookCover(){
       isBookOpen = false;
       qs('#bookCoverScreen').style.display = 'flex';
-      qs('#bookSpread').style.display = 'none';
+      const spread = qs('#bookSpread');
+      spread.style.display = 'none';
+      spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
       clearPageTurner();
     }
 
@@ -2586,6 +2630,12 @@
       page.style.color = note.textColor || '';
     }
 
+
+    function fillBookUnderlay(leftNote, rightNote, leftDisplayIndex, total){
+      fillBookLeaf('UnderLeft', leftNote, leftDisplayIndex, total);
+      fillBookLeaf('UnderRight', rightNote, leftDisplayIndex + 1, total);
+    }
+
     function updateBookPage(direction='forward'){
       if(isBookAnimating) return;
       const notes = getNotebookNotes(activeNotebookId);
@@ -2595,11 +2645,13 @@
       if(notes.length === 0){
         fillBookLeaf('Left', null, 0, 0);
         fillBookLeaf('Right', null, 0, 0);
+        fillBookUnderlay(null, null, 0, 0);
         qs('#bookLeftTitle').textContent = 'Sin notas';
         qs('#bookLeftContent').innerHTML = '<p class="book-empty">Agrega una nota para empezar tu libreta.</p>';
         qs('#bookRightTitle').textContent = 'Libreta lista';
         qs('#bookRightContent').innerHTML = '<p class="book-empty">Cada nota ocupará solo una hoja.</p>';
         clearPageTurner();
+        spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
         return;
       }
       const leftIndex = bookPageIndex;
@@ -2616,21 +2668,27 @@
       const targetRight = notes[normalizedTargetIndex + 1] || null;
 
       const shouldAnimateTurn = direction !== 'initial';
+      spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
       if(shouldAnimateTurn){
         isBookAnimating = true;
         animatePageTurn(direction === 'back' ? 'backward' : 'forward', currentLeft, currentRight, targetLeft, targetRight, notes.length);
+        if(direction === 'back'){
+          fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
+        } else {
+          fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
+        }
       } else {
         clearPageTurner();
+        fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
       }
 
       fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
       fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
-      spread.classList.remove('flip-forward','flip-back','turning');
       if(shouldAnimateTurn){
         requestAnimationFrame(()=>{
-          spread.classList.add('turning', direction === 'back' ? 'flip-back' : 'flip-forward');
+          spread.classList.add('turning', direction === 'back' ? 'flip-back' : 'flip-forward', direction === 'back' ? 'turning-back' : 'turning-forward');
           setTimeout(()=>{
-            spread.classList.remove('flip-forward','flip-back','turning');
+            spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
             isBookAnimating = false;
           }, BOOK_TURN_MS);
         });
@@ -2728,6 +2786,10 @@
       }
       qs('#overlayEditor').style.display='none';
       clearTimeout(autosaveTimer);
+      if(autosaveObserver){
+        autosaveObserver.disconnect();
+        autosaveObserver = null;
+      }
       editingNote=null;
     }
 
@@ -2955,19 +3017,59 @@
       }
     }
 
+    function queueAutosave(){
+      if(qs('#overlayEditor').style.display !== 'flex') return;
+      clearTimeout(autosaveTimer);
+      autosaveTimer = setTimeout(async ()=>{
+        if(qs('#overlayEditor').style.display !== 'flex') return;
+        try {
+          animateSaveButton('Guardando...', true);
+          await saveCurrentNote({ shouldClose:false });
+          animateSaveButton('Guardado ✔');
+        } catch(error){
+          console.error('Error en autoguardado:', error);
+          animateSaveButton('Error al guardar');
+        }
+      }, AUTOSAVE_DEBOUNCE_MS);
+    }
+
     function setupAutosave(){
-      const editor = qs('#editor'); const titleEl = qs('#noteTitle');
-      editor.oninput = titleEl.oninput = ()=>{
-        clearTimeout(autosaveTimer);
-        autosaveTimer=setTimeout(async ()=>{
-          try {
-            await saveCurrentNote({ shouldClose:false });
-          } catch(error){
-            console.error('Error en autoguardado:', error);
-            animateSaveButton('Guardado ✔');
-          }
-        },700);
-      };
+      const editor = qs('#editor');
+      const titleEl = qs('#noteTitle');
+      const notebookSelect = qs('#editorNotebook');
+      if(!editor || !titleEl || !notebookSelect) return;
+
+      if(autosaveBoundHandlers){
+        editor.removeEventListener('input', autosaveBoundHandlers.inputHandler);
+        titleEl.removeEventListener('input', autosaveBoundHandlers.inputHandler);
+        notebookSelect.removeEventListener('change', autosaveBoundHandlers.changeHandler);
+      }
+
+      const inputHandler = ()=>queueAutosave();
+      const changeHandler = ()=>queueAutosave();
+      autosaveBoundHandlers = { inputHandler, changeHandler };
+      editor.addEventListener('input', inputHandler);
+      titleEl.addEventListener('input', inputHandler);
+      notebookSelect.addEventListener('change', changeHandler);
+
+      if(autosaveObserver){
+        autosaveObserver.disconnect();
+      }
+      autosaveObserver = new MutationObserver((mutationList)=>{
+        const hasMeaningfulChange = mutationList.some(m=>
+          m.type === 'childList' ||
+          m.type === 'characterData' ||
+          (m.type === 'attributes' && ['style','src','checked','class'].includes(m.attributeName || ''))
+        );
+        if(hasMeaningfulChange) queueAutosave();
+      });
+      autosaveObserver.observe(editor, {
+        childList:true,
+        subtree:true,
+        characterData:true,
+        attributes:true,
+        attributeFilter:['style','src','checked','class']
+      });
     }
 
     function updateNotebookCoverMeta(){
