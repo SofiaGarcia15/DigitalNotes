@@ -427,10 +427,12 @@
       border-radius:10px;
       border:1px solid var(--border);
       padding:14px 16px 14px 14px;
-      overflow:auto;
+      overflow-y:auto;
+      overflow-x:hidden;
       background:var(--panel-bg);
       color:var(--panel-text);
-      line-height:1.5
+      line-height:1.5;
+      word-break:break-word
     }
 
     .editor-shell{
@@ -510,6 +512,14 @@
       margin-top:8px;
       cursor:move;
       touch-action:none;
+    }
+
+    #nbCoverFileName,
+    #nbCoverColorValue{
+      font-size:12px;
+      color:var(--muted);
+      margin-left:6px;
+      font-weight:600;
     }
 
     .note-img.selected{
@@ -1572,8 +1582,8 @@
     <div class="modal">
       <h3 id="nbModalTitle">Nuevo cuaderno</h3>
       <input id="nbName" placeholder="Nombre del cuaderno" class="title-input" />
-      <label>Portada: <input type="file" id="nbCoverFile" accept="image/*"></label>
-      <label>Color del cuaderno: <input type="color" id="nbCoverColor" value="#f08aba"></label>
+      <label>Portada: <input type="file" id="nbCoverFile" accept="image/*"><span id="nbCoverFileName">Sin archivo seleccionado</span></label>
+      <label>Color del cuaderno: <input type="color" id="nbCoverColor" value="#f08aba"><span id="nbCoverColorValue">#f08aba</span></label>
       <div style="display:flex;gap:10px;margin-top:12px;justify-content:flex-end">
         <button id="nbCancel" class="btn" style="background:#ddd">Cancelar</button>
         <button id="nbSave" class="btn">Guardar</button>
@@ -2394,12 +2404,14 @@
     }
 
     let activeNotebookId = null;
+    let notebookViewScrollTop = 0;
     let bookPageIndex = 0;
     let isBookOpen = false;
     let isBookAnimating = false;
     const BOOK_TURN_MS = 940;
 
     function openNotebookView(notebookId){
+      notebookViewScrollTop = window.scrollY || window.pageYOffset || 0;
       activeNotebookId = notebookId;
       setActiveNotebookCard(notebookId);
       const nb = state.notebooks.find(n=>n.id===notebookId);
@@ -2440,6 +2452,7 @@
       qs('#view-cuadernos').style.display='block';
       activeNotebookId = null;
       setActiveNotebookCard(null);
+      requestAnimationFrame(()=>window.scrollTo({ top: notebookViewScrollTop, behavior:'auto' }));
     }
 
 
@@ -2629,8 +2642,8 @@
     // --- Events and UI wiring ---
     qs('#filterNotebook').addEventListener('change', renderNotes);
     qs('#searchInput').addEventListener('input', renderNotes);
-    qs('#closeEditor').addEventListener('click', ()=>closeEditor());
-    document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeEditor(); qs('#overlayNotebook').style.display='none'; closeNotebookView(); closeBookMode(); closeCalendarModal(); } });
+    qs('#closeEditor').addEventListener('click', ()=>{ void closeEditor(); });
+    document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ void closeEditor(); qs('#overlayNotebook').style.display='none'; closeNotebookView(); closeBookMode(); closeCalendarModal(); } });
     qs('#closeNotebookView').addEventListener('click', closeNotebookView);
     qs('#openBookModeInline').addEventListener('click', openBookMode);
     qs('#bookBgColor').addEventListener('input', async (e)=>{
@@ -2705,23 +2718,18 @@
         qs('#editor').style.color = '';
       }
     }
-    function closeEditor(){
+    async function closeEditor({ skipSave=false } = {}){
+      if(!skipSave && qs('#overlayEditor').style.display === 'flex'){
+        try{
+          await saveCurrentNote({ shouldClose:false });
+        } catch(error){
+          console.error('No se pudo guardar antes de cerrar el editor:', error);
+        }
+      }
       qs('#overlayEditor').style.display='none';
       clearTimeout(autosaveTimer);
       editingNote=null;
     }
-
-    qs('#editor').addEventListener('keydown', (event)=>{
-      if(event.key === 'PageUp' || (event.altKey && event.key === 'ArrowUp')){
-        event.preventDefault();
-        qs('#editor').scrollBy({top:-240, behavior:'smooth'});
-        return;
-      }
-      if(event.key === 'PageDown' || (event.altKey && event.key === 'ArrowDown')){
-        event.preventDefault();
-        qs('#editor').scrollBy({top:240, behavior:'smooth'});
-      }
-    });
 
     qs('#saveNote').addEventListener('click', async ()=>{
       animateSaveButton('Guardando...', true);
@@ -2736,7 +2744,7 @@
         saveState();
         renderNotes();
         refreshNotebookWorkspace();
-        closeEditor();
+        void closeEditor({ skipSave:true });
       }
     });
 
@@ -2936,7 +2944,7 @@
         await saveState();
         renderNotes();
         refreshNotebookWorkspace();
-        if(shouldClose){ editingNote=null; closeEditor(); }
+        if(shouldClose){ editingNote=null; await closeEditor({ skipSave:true }); }
       };
 
       noteSaveInFlight = run();
@@ -2962,6 +2970,19 @@
       };
     }
 
+    function updateNotebookCoverMeta(){
+      const fileEl = qs('#nbCoverFile');
+      const fileNameEl = qs('#nbCoverFileName');
+      const colorEl = qs('#nbCoverColor');
+      const colorValueEl = qs('#nbCoverColorValue');
+      if(fileNameEl){
+        fileNameEl.textContent = fileEl?.files?.[0]?.name || 'Sin archivo seleccionado';
+      }
+      if(colorValueEl){
+        colorValueEl.textContent = colorEl?.value || '#f08aba';
+      }
+    }
+
     // --- Notebooks CRUD ---
     let editingNotebook=null; let renameOnly=false;
     function openNotebookModal(nb=null,opt={}){
@@ -2974,6 +2995,7 @@
       const coverInput = qs('#nbCoverFile');
       coverInput.value = '';
       coverInput.disabled = renameOnly;
+      updateNotebookCoverMeta();
     }
     qs('#nbCancel').addEventListener('click', ()=>qs('#overlayNotebook').style.display='none');
     qs('#nbSave').addEventListener('click', async ()=>{
@@ -2991,6 +3013,8 @@
       }
       saveState(); renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); qs('#overlayNotebook').style.display='none';
     });
+    qs('#nbCoverFile').addEventListener('change', updateNotebookCoverMeta);
+    qs('#nbCoverColor').addEventListener('input', updateNotebookCoverMeta);
     function deleteNotebook(id){
       if(!confirm('Eliminar libreta y sus notas. ¿Continuar?')) return;
       state.notebooks = state.notebooks.filter(nb=>nb.id!==id);
