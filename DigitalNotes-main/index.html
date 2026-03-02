@@ -1111,10 +1111,6 @@
       z-index:2;
     }
 
-    .book-spread.turning-forward #bookRightPage,
-    .book-spread.turning-back #bookLeftPage{
-      visibility:hidden;
-    }
 
     [data-theme="dark"] .book-leaf{
       background:#312733;
@@ -1224,7 +1220,7 @@
     }
 
     .book-spread.flip-forward{
-      animation:pageFlipForward 820ms cubic-bezier(0.24,0.82,0.26,1);
+      animation:none;
     }
 
     .book-spread.flip-forward::after{
@@ -1234,7 +1230,7 @@
     }
 
     .book-spread.flip-back{
-      animation:pageFlipBackward 820ms cubic-bezier(0.24,0.82,0.26,1);
+      animation:none;
     }
 
     .book-spread.flip-back::after{
@@ -2669,29 +2665,28 @@
 
       const shouldAnimateTurn = direction !== 'initial';
       spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
+
       if(shouldAnimateTurn){
         isBookAnimating = true;
-        animatePageTurn(direction === 'back' ? 'backward' : 'forward', currentLeft, currentRight, targetLeft, targetRight, notes.length);
-        if(direction === 'back'){
-          fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
-        } else {
-          fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
-        }
-      } else {
-        clearPageTurner();
         fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
-      }
+        fillBookLeaf('Left', currentLeft, leftIndex + 1, notes.length);
+        fillBookLeaf('Right', currentRight, rightIndex + 1, notes.length);
+        animatePageTurn(direction === 'back' ? 'backward' : 'forward', currentLeft, currentRight, targetLeft, targetRight, notes.length);
 
-      fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
-      fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
-      if(shouldAnimateTurn){
         requestAnimationFrame(()=>{
           spread.classList.add('turning', direction === 'back' ? 'flip-back' : 'flip-forward', direction === 'back' ? 'turning-back' : 'turning-forward');
           setTimeout(()=>{
+            fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
+            fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
             spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
             isBookAnimating = false;
           }, BOOK_TURN_MS);
         });
+      } else {
+        clearPageTurner();
+        fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
+        fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
+        fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
       }
 
       bookPageIndex = normalizedTargetIndex;
@@ -2794,9 +2789,14 @@
     }
 
     qs('#saveNote').addEventListener('click', async ()=>{
-      animateSaveButton('Guardando...', true);
-      await saveCurrentNote({ shouldClose:false });
-      animateSaveButton('Guardado ✔');
+      try {
+        animateSaveButton('Guardando...', true);
+        await saveCurrentNote({ shouldClose:false, throwOnError:true, forceSave:true });
+        animateSaveButton('Guardado ✔');
+      } catch(error){
+        console.error('Error al guardar manualmente:', error);
+        animateSaveButton('Error al guardar');
+      }
     });
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
     qs('#deleteNoteBtn').addEventListener('click', ()=>{
@@ -2929,19 +2929,23 @@
       if(!selectedCalendarDay) return alert('Selecciona una fecha');
       const formatted = selectedCalendarDay.toLocaleDateString(getLocaleTag(), { day:'2-digit', month:'long', year:'numeric' });
       insertHtmlAtCursor(`<p><strong>📅 ${formatted}</strong></p>`);
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
       closeCalendarModal();
     });
 
-    async function saveCurrentNote({ shouldClose=false, throwOnError=false } = {}){
+    async function saveCurrentNote({ shouldClose=false, throwOnError=false, forceSave=false } = {}){
       if(noteSaveInFlight){
         pendingNoteSave = true;
         await noteSaveInFlight;
         if(pendingNoteSave){
           pendingNoteSave = false;
-          return saveCurrentNote({ shouldClose:false, throwOnError });
+          return saveCurrentNote({ shouldClose:false, throwOnError, forceSave });
         }
         return;
+      }
+
+      if(forceSave){
+        clearTimeout(autosaveTimer);
       }
 
       const run = async ()=>{
@@ -3017,10 +3021,11 @@
       }
     }
 
-    function queueAutosave(){
+    function queueAutosave({ force=false } = {}){
       if(qs('#overlayEditor').style.display !== 'flex') return;
       clearTimeout(autosaveTimer);
-      autosaveTimer = setTimeout(async ()=>{
+
+      const runSave = async ()=>{
         if(qs('#overlayEditor').style.display !== 'flex') return;
         try {
           animateSaveButton('Guardando...', true);
@@ -3030,7 +3035,14 @@
           console.error('Error en autoguardado:', error);
           animateSaveButton('Error al guardar');
         }
-      }, AUTOSAVE_DEBOUNCE_MS);
+      };
+
+      if(force){
+        runSave();
+        return;
+      }
+
+      autosaveTimer = setTimeout(runSave, AUTOSAVE_DEBOUNCE_MS);
     }
 
     function setupAutosave(){
@@ -3167,7 +3179,7 @@
       }
       // apply to editor background for visual feedback
       qs('#editor').style.background = bg;
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     qs('#textColorTool').addEventListener('click', ()=>{
@@ -3177,7 +3189,7 @@
       const color = e.target.value;
       document.execCommand('foreColor', false, color);
       qs('#editor').focus();
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     // Quick palette generation
@@ -3186,7 +3198,7 @@
       const container = qs('#quickPalette'); container.innerHTML='';
       quickColors.forEach(c=>{
         const btn = document.createElement('button'); btn.style.background=c;
-        btn.addEventListener('click', ()=>{ qs('#editor').style.background=c; if(editingNote) editingNote.bgColor=c; saveCurrentNote({shouldClose:false}); });
+        btn.addEventListener('click', ()=>{ qs('#editor').style.background=c; if(editingNote) editingNote.bgColor=c; queueAutosave(); });
         container.appendChild(btn);
       });
     }
@@ -3200,7 +3212,7 @@
       // insert at caret position in contenteditable
       insertHtmlAtCursor(`<img src="${dataUrl}" class="note-img" style="width:70%;display:block;margin:8px 0;position:relative;left:0px;top:0px;" />`);
       // autosave will pick up changes
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
       e.target.value = '';
     });
 
@@ -3245,7 +3257,7 @@
       const size = step > 0 ? 5 : 2;
       document.execCommand('fontSize', false, size);
       qs('#editor').focus();
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     }
 
     qs('#fontIncrease').addEventListener('click', ()=>changeSelectionFontSize(1));
@@ -3264,7 +3276,7 @@
         sw.addEventListener('click', ()=>{
           qs('#editor').style.background = color;
           if(editingNote) editingNote.bgColor = color;
-          void saveCurrentNote({shouldClose:false});
+          queueAutosave();
         });
         wrap.appendChild(sw);
       });
@@ -3305,7 +3317,7 @@
       btn.addEventListener('click', async ()=>{
         const src = btn.dataset.template;
         insertAssetBlock({ src, label:'Plantilla en la nota', width:'46%' , template:true });
-        await saveCurrentNote({shouldClose:false});
+        await saveCurrentNote({shouldClose:false, forceSave:true});
         animateSaveButton('Guardado ✔');
         setTemplateSession(false);
       });
@@ -3363,7 +3375,7 @@
     qs('#saveDrawingBtn').addEventListener('click', ()=>{
       const dataUrl = drawCanvas.toDataURL('image/png');
       insertAssetBlock({ src:dataUrl, label:'Dibujo en la nota', width:'90%' });
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     const drawFullscreenOverlay = qs('#drawFullscreenOverlay');
@@ -3447,7 +3459,7 @@
     qs('#drawFsSave').addEventListener('click', ()=>{
       const dataUrl = drawFsCanvas.toDataURL('image/png');
       insertAssetBlock({ src:dataUrl, label:'Dibujo en pantalla completa', width:'95%' });
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
       closeFullscreenDraw();
     });
 
@@ -3596,14 +3608,14 @@
       applyEditorFont(currentFontFamily);
       updateActiveFontUI();
       qs('#editor').focus();
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     qs('#emojiBtn').addEventListener('click', ()=>{
       const value = prompt('Escribe o pega un emoji para insertarlo:');
       if(!value) return;
       insertHtmlAtCursor(`${value.trim()} `);
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     qs('#applyHighlight').addEventListener('click', ()=>{
@@ -3614,7 +3626,7 @@
 
     qs('#insertChecklist').addEventListener('click', ()=>{
       insertHtmlAtCursor(`<div><label><input type="checkbox" /> Tarea</label></div>`);
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     // --- Image controls ---
@@ -3671,7 +3683,7 @@
 
     qs('#editor').addEventListener('pointerup', ()=>{
       if(!dragImageState) return;
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
       dragImageState = null;
     });
 
@@ -3683,7 +3695,7 @@
         } else {
           target.removeAttribute('checked');
         }
-        void saveCurrentNote({shouldClose:false});
+        queueAutosave();
       }
     });
 
@@ -3695,7 +3707,7 @@
         } else {
           target.removeAttribute('checked');
         }
-        void saveCurrentNote({shouldClose:false});
+        queueAutosave();
       }
     });
 
@@ -3714,19 +3726,19 @@
     imageSize.addEventListener('input', ()=>{
       if(!currentImage) return;
       currentImage.style.width = `${imageSize.value}%`;
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     imageRotate.addEventListener('input', ()=>{
       if(!currentImage) return;
       currentImage.style.transform = `rotate(${imageRotate.value}deg)`;
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     imageAlign.addEventListener('change', ()=>{
       if(!currentImage) return;
       applyImageAlign(imageAlign.value);
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
 
@@ -3735,7 +3747,7 @@
       const pinned = currentImage.dataset.pinned === 'true';
       currentImage.dataset.pinned = pinned ? 'false' : 'true';
       pinImageBtn.textContent = pinned ? 'Fijar imagen' : 'Desfijar imagen';
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
     qs('#removeImageBtn').addEventListener('click', ()=>{
@@ -3743,7 +3755,7 @@
       currentImage.remove();
       currentImage = null;
       imageControls.style.display = 'none';
-      void saveCurrentNote({shouldClose:false});
+      queueAutosave();
     });
 
 
