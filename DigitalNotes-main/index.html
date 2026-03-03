@@ -1956,6 +1956,7 @@
       <p id="settingsUserBirth" style="margin:0 0 16px"></p>
       <div style="display:flex;justify-content:flex-end;gap:8px">
         <button id="closeSettingsBtn" class="btn" style="background:#ddd">Cerrar</button>
+        <button id="deleteAccountBtn" class="btn" style="background:#f4a4b8">Eliminar cuenta</button>
         <button id="logoutBtn" class="btn">Cerrar sesión</button>
       </div>
     </div>
@@ -1981,8 +1982,8 @@
 
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, deleteUser } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -2029,8 +2030,6 @@
     let notesDocUnsubscribe = null;
     let isApplyingRemoteState = false;
     let isSaving = false;
-    const EDITOR_AUTOSAVE_DELAY_MS = 3000;
-    let editorAutosaveTimer = null;
     let editorLastSavedSnapshot = '';
     let recentIndicatorTimer = null;
     let hasQueuedSave = false;
@@ -2868,7 +2867,6 @@
       qs('#editor').focus();
     }
     function closeEditor(){
-      clearTimeout(editorAutosaveTimer);
       setRecentSaveIndicator('');
       qs('#overlayEditor').style.display='none';
       editingNote=null;
@@ -3015,7 +3013,7 @@
       }
       indicator.textContent = message;
       indicator.classList.add('visible');
-      if(message === 'Guardado'){
+      if(message === 'Guardado' || message === 'Guardado correctamente'){
         recentIndicatorTimer = setTimeout(()=>{
           indicator.classList.remove('visible');
           indicator.textContent = '';
@@ -3035,18 +3033,13 @@
       });
     }
 
-    function queueEditorAutosave(){
-      if(qs('#overlayEditor').style.display !== 'flex') return;
-      clearTimeout(editorAutosaveTimer);
-      setRecentSaveIndicator('Guardando...');
-      editorAutosaveTimer = setTimeout(async ()=>{
-        if(buildEditorSnapshot() === editorLastSavedSnapshot) return;
-        await saveCurrentNote({ shouldClose:false, throwOnError:false });
-      }, EDITOR_AUTOSAVE_DELAY_MS);
-    }
-
     function onUserChange(){
-      queueEditorAutosave();
+      if(qs('#overlayEditor').style.display !== 'flex') return;
+      if(buildEditorSnapshot() === editorLastSavedSnapshot){
+        setRecentSaveIndicator('');
+        return;
+      }
+      setRecentSaveIndicator('Cambios sin guardar');
     }
 
 
@@ -3075,7 +3068,7 @@
       }
 
       if(buildEditorSnapshot() === editorLastSavedSnapshot){
-        setRecentSaveIndicator('Guardado');
+        setRecentSaveIndicator('Guardado correctamente');
         if(shouldClose){ editingNote=null; closeEditor(); }
         return;
       }
@@ -3124,7 +3117,8 @@
         editorLastSavedSnapshot = buildEditorSnapshot();
         renderNotes();
         refreshNotebookWorkspace();
-        setRecentSaveIndicator('Guardado');
+        setRecentSaveIndicator('Guardado correctamente');
+        showToast('Guardado correctamente');
         if(shouldClose){ editingNote=null; closeEditor(); }
       };
 
@@ -3951,6 +3945,40 @@
         console.error('Error al cerrar sesión en Firebase Auth:', error);
         showToast('No se pudo cerrar la sesión. Intenta nuevamente.');
       }
+    });
+
+    async function deleteCollectionDocs(path){
+      const firestoreDb = getFirebaseFirestoreDb();
+      const snapshot = await getDocs(collection(firestoreDb, ...path));
+      await Promise.all(snapshot.docs.map(item=>deleteDoc(item.ref)));
+    }
+
+    async function deleteCurrentUserAccount(){
+      if(!currentUser) return;
+      const confirmed = confirm('¿Estás seguro de eliminar tu cuenta? Esta acción no se puede deshacer.');
+      if(!confirmed) return;
+
+      try {
+        await deleteCollectionDocs(['users', currentUser.id, 'notes']);
+        await deleteCollectionDocs(['users', currentUser.id, 'trash']);
+        const auth = getFirebaseAuthInstance();
+        const authUser = auth.currentUser;
+        if(!authUser) throw new Error('No hay sesión activa para eliminar.');
+        await deleteUser(authUser);
+        showToast('Cuenta eliminada correctamente');
+        await clearSession({ silent:true });
+      } catch(error){
+        console.error('Error al eliminar cuenta:', error);
+        if(error?.code === 'auth/requires-recent-login'){
+          showToast('Por seguridad, vuelve a iniciar sesión y reintenta eliminar tu cuenta.');
+          return;
+        }
+        showToast('No se pudo eliminar la cuenta. Intenta nuevamente.');
+      }
+    }
+
+    qs('#deleteAccountBtn').addEventListener('click', async ()=>{
+      await deleteCurrentUserAccount();
     });
 
     // --- Utility: close overlays when clicking outside modal content ---
