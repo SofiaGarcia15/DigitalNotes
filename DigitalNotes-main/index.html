@@ -1957,6 +1957,7 @@
       <div style="display:flex;justify-content:flex-end;gap:8px">
         <button id="closeSettingsBtn" class="btn" style="background:#ddd">Cerrar</button>
         <button id="logoutBtn" class="btn">Cerrar sesión</button>
+        <button id="deleteAccountBtn" class="btn" style="background:#ff8d8d;color:#fff">Eliminar cuenta</button>
       </div>
     </div>
   </div>
@@ -1981,15 +1982,15 @@
 
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getAuth, onAuthStateChanged, signOut, deleteUser } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getFirestore, collection, query, where, orderBy, onSnapshot, doc, setDoc, serverTimestamp, updateDoc, deleteDoc, getDocs, writeBatch } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { Picker, init } from 'https://cdn.jsdelivr.net/npm/emoji-mart@latest/+esm';
+    import data from 'https://cdn.jsdelivr.net/npm/@emoji-mart/data/+esm';
 
-    /* ---------------------------
-       Digital Notes 2026 - JS
-       Todo en un solo archivo
-       --------------------------- */
-    const ONBOARDING_KEY = 'digitalNotesOnboarding_v1';
-    const CALENDAR_STABLE_KEY = 'digitalNotesCalendarStable_v1';
+    // Inicializa la data del selector de emojis (categorías + buscador + unicode real).
+    init({ data });
+
+    // Configuración base de Firebase.
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyB-9P1aSzryyeoQomZokdFScoDgl1GaIo4",
       authDomain: "digitalnotes-c3bb7.firebaseapp.com",
@@ -1998,2015 +1999,384 @@
       messagingSenderId: "822613016150",
       appId: "1:822613016150:web:6816e7d070396cf67cc5f7"
     };
-    let state = { notebooks: [], notes: [], trash: [], darkMode: false };
-    const generateId = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
-    const qs = s => document.querySelector(s);
-    const qsa = s => document.querySelectorAll(s);
 
-    // --- Helpers ---
-    const truncate = (str,len)=>{ if(!str) return ''; return str.length>len? str.slice(0,len)+'...':str; };
-    const stripHtml = html=>{ const div=document.createElement('div'); div.innerHTML=html; return div.textContent||div.innerText||''; };
-    const getFirstImageSrc = html=>{
-      if(!html) return null;
-      const div = document.createElement('div');
-      div.innerHTML = html;
-      return div.querySelector('img')?.src || null;
-    };
-    const fileToDataUrl = file=> new Promise(res=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.readAsDataURL(file); });
-    const getLocaleTag = ()=> navigator.language || Intl.DateTimeFormat().resolvedOptions().locale || 'es-MX';
-    const TEMPLATE_ITEMS = [
-      { src:'plantilla1.png', name:'Plantilla 1' },
-      { src:'plantilla2.png', name:'Plantilla 2' },
-      { src:'plantilla3.png', name:'Plantilla 3' },
-      { src:'plantilla4.png', name:'Plantilla 4' },
-      { src:'plantilla5.png', name:'Plantilla 5' }
-    ];
+    // Utilidades de DOM.
+    const qs = (selector) => document.querySelector(selector);
+    const qsa = (selector) => document.querySelectorAll(selector);
+    const stripHtml = (html) => { const d = document.createElement('div'); d.innerHTML = html || ''; return d.textContent || ''; };
 
+    // Inicialización de servicios Firebase.
+    const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
 
+    // Estado de la app: notas, vista y nota en edición.
     let currentUser = null;
-    let firebaseAuth = null;
-    let firebaseFirestoreDb = null;
-    let notesDocUnsubscribe = null;
-    let isApplyingRemoteState = false;
-    let isSaving = false;
-    const EDITOR_AUTOSAVE_DELAY_MS = 3000;
-    let editorAutosaveTimer = null;
-    let editorLastSavedSnapshot = '';
-    let recentIndicatorTimer = null;
-    let hasQueuedSave = false;
-    let activeSavePromise = null;
+    let notesUnsubscribe = null;
+    let notes = [];
+    let editingNoteId = null;
+    let currentView = 'notes';
+    let lastSelectionRange = null;
 
-    function isFirebaseConfigured(){
-      return !Object.values(FIREBASE_CONFIG).some(value=>!value || value.includes('REEMPLAZA_CON_TU'));
-    }
+    // Referencias a elementos clave de UI.
+    const notesGrid = qs('#notesGrid');
+    const trashGrid = qs('#trashGrid');
+    const overlayEditor = qs('#overlayEditor');
+    const noteTitleInput = qs('#noteTitle');
+    const editor = qs('#editor');
+    const saveIndicator = qs('#recentSaveIndicator');
+    const saveButton = qs('#saveNote');
+    const deleteNoteBtn = qs('#deleteNoteBtn');
+    const toast = qs('#appToast');
 
-    function getFirebaseAppInstance(){
-      return getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
-    }
-
-    function getFirebaseAuthInstance(){
-      if(firebaseAuth) return firebaseAuth;
-      if(!isFirebaseConfigured()) throw new Error('Configura FIREBASE_CONFIG con los datos de tu proyecto Firebase.');
-      firebaseAuth = getAuth(getFirebaseAppInstance());
-      return firebaseAuth;
-    }
-
-    function getFirebaseFirestoreDb(){
-      if(firebaseFirestoreDb) return firebaseFirestoreDb;
-      firebaseFirestoreDb = getFirestore(getFirebaseAppInstance());
-      return firebaseFirestoreDb;
-    }
-
-
-    async function syncTrashedNoteToFirestore(note){
-      if(!currentUser || !note?.id) return;
-      const firestoreDb = getFirebaseFirestoreDb();
-      const trashRef = doc(firestoreDb, 'users', currentUser.id, 'trash', note.id);
-      await setDoc(trashRef, {
-        ...note,
-        titulo: note.title || '',
-        contenido: note.content || '',
-        estado: 'papelera',
-        deleted: true,
-        notebookId: note.notebookId || note.notebook || null,
-        notebook: note.notebookId || note.notebook || null,
-        deletedAt: note.deletedAt || Date.now(),
-        updatedAt: serverTimestamp()
-      }, { merge:false });
-      const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', note.id);
-      await deleteDoc(noteRef).catch(()=>{});
-    }
-
-    async function removeTrashedNoteFromFirestore(noteId){
-      if(!currentUser || !noteId) return;
-      const firestoreDb = getFirebaseFirestoreDb();
-      const trashRef = doc(firestoreDb, 'users', currentUser.id, 'trash', noteId);
-      await deleteDoc(trashRef).catch(()=>{});
-    }
-
-    async function syncRestoredNoteToFirestore(note){
-      if(!currentUser || !note?.id) return;
-      const firestoreDb = getFirebaseFirestoreDb();
-      const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', note.id);
-      await setDoc(noteRef, {
-        ...note,
-        titulo: note.title || '',
-        contenido: note.content || '',
-        estado: 'activa',
-        deleted: false,
-        notebookId: note.notebookId || note.notebook || null,
-        notebook: note.notebookId || note.notebook || null,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      }, { merge:false });
-      await removeTrashedNoteFromFirestore(note.id);
-    }
-
-    function getDefaultState(){
-      return {
-        notebooks:[{id:generateId(),name:'General',cover:null,coverColor:'#f08aba'}],
-        notes:[],
-        trash:[],
-        darkMode:false
-      };
-    }
-
-    function normalizeNote(note = {}, fallbackNotebookId){
-      const resolvedNotebookId = note.notebookId || note.notebook || fallbackNotebookId;
-      const hasDeletedFlag = typeof note.deleted === 'boolean';
-      const isDeleted = hasDeletedFlag ? note.deleted : Boolean(note.deletedAt);
-      const normalizedStatus = note.estado || note.status || (isDeleted ? 'papelera' : 'activa');
-      return {
-        id: note.id || generateId(),
-        title: note.title || '',
-        content: typeof note.content === 'string' ? note.content : '',
-        notebookId: resolvedNotebookId,
-        notebook: resolvedNotebookId,
-        deleted: normalizedStatus === 'papelera',
-        estado: normalizedStatus,
-        fontFamily: note.fontFamily || null,
-        fontSize: note.fontSize || null,
-        textColor: note.textColor || null,
-        bgColor: note.bgColor || note.backgroundColor || null,
-        backgroundColor: note.backgroundColor || note.bgColor || null,
-        templateId: note.templateId || null,
-        images: Array.isArray(note.images) ? note.images : [],
-        created: note.created || note.createdAt || note.updated || Date.now(),
-        updated: note.updated || note.updatedAt || Date.now(),
-        ...note
-      };
-    }
-
-    function ensureDistinctCollections(nextState){
-      nextState.notes = nextState.notes.filter(note=>note.estado !== 'papelera' && !note.deleted);
-      nextState.trash = nextState.trash.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now() }));
-      const trashIds = new Set(nextState.trash.map(note=>note.id));
-      nextState.notes = nextState.notes.filter(note=>!trashIds.has(note.id));
-      const noteIds = new Set(nextState.notes.map(note=>note.id));
-      nextState.trash = nextState.trash.filter(note=>!noteIds.has(note.id));
-      return nextState;
-    }
-
-    function normalizeState(rawState = {}){
-      const nextState = {
-        notebooks: Array.isArray(rawState.notebooks) ? rawState.notebooks : [],
-        notes: Array.isArray(rawState.notes) ? rawState.notes : [],
-        trash: Array.isArray(rawState.trash) ? rawState.trash : [],
-        darkMode: Boolean(rawState.darkMode)
-      };
-      if(nextState.notebooks.length === 0){
-        nextState.notebooks = [{id:generateId(),name:'General',cover:null,coverColor:'#f08aba'}];
-      }
-      nextState.notebooks = nextState.notebooks.map(nb=>({ coverColor:'#f08aba', bookBgColor:'#ffcae3', bookBgImage:null, ...nb }));
-      nextState.notes = nextState.notes.map(note=>normalizeNote(note, nextState.notebooks[0].id));
-      nextState.trash = nextState.trash.map(note=>({ estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now(), ...normalizeNote(note, nextState.notebooks[0].id) }));
-      const softDeletedNotes = nextState.notes.filter(note=>note.deleted || note.estado === 'papelera' || Boolean(note.deletedAt));
-      if(softDeletedNotes.length){
-        nextState.notes = nextState.notes.filter(note=>!(note.deleted || note.estado === 'papelera' || note.deletedAt));
-        nextState.trash = [...nextState.trash, ...softDeletedNotes.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now() }))];
-      }
-      const fallbackNotebookId = nextState.notebooks[0].id;
-      nextState.notes = nextState.notes.map(note=>{
-        const notebookId = nextState.notebooks.some(nb=>nb.id===note.notebookId) ? note.notebookId : fallbackNotebookId;
-        return { ...note, notebookId, notebook:notebookId };
-      });
-      nextState.trash = nextState.trash.map(note=>{
-        const notebookId = nextState.notebooks.some(nb=>nb.id===note.notebookId) ? note.notebookId : fallbackNotebookId;
-        return { ...note, notebookId, notebook:notebookId };
-      });
-      return ensureDistinctCollections(nextState);
-    }
-
-    function stopNotesSync(){
-      if(typeof notesDocUnsubscribe === 'function'){
-        notesDocUnsubscribe();
-      }
-      notesDocUnsubscribe = null;
-    }
-
-    function applyState(nextState){
-      state = normalizeState(nextState);
-      if(state.darkMode) document.body.setAttribute('data-theme','dark');
-      else document.body.removeAttribute('data-theme');
-      renderNotebooks();
-      renderNotes();
-      refreshNotebookWorkspace();
-      populateEditorNotebook();
-    }
-
-    async function syncStateToFirestore(){
-      if(!currentUser || isApplyingRemoteState) return;
-      ensureDistinctCollections(state);
-      const firestoreDb = getFirebaseFirestoreDb();
-      await setDoc(doc(firestoreDb, 'notes', currentUser.id), {
-        userId: currentUser.id,
-        notebooks: state.notebooks,
-        notes: state.notes,
-        trash: state.trash,
-        darkMode: state.darkMode,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-    }
-
-    function startNotesSync(userId){
-      stopNotesSync();
-      const firestoreDb = getFirebaseFirestoreDb();
-      notesDocUnsubscribe = onSnapshot(doc(firestoreDb, 'notes', userId), snapshot=>{
-        const data = snapshot.data();
-        isApplyingRemoteState = true;
-        applyState(data ? data : getDefaultState());
-        isApplyingRemoteState = false;
-      }, error=>{
-        console.error('Error al sincronizar notas del usuario:', error);
-      });
-    }
-
-    function mapFirebaseError(error){
-      const code = error?.code || '';
-      const customMessage = error?.message || 'Ocurrió un error inesperado.';
-      const map = {
-        'auth/email-already-in-use': 'Ese correo ya está registrado.',
-        'auth/invalid-email': 'El correo no es válido.',
-        'auth/missing-email': 'Falta completar algún campo obligatorio.',
-        'auth/weak-password': 'La contraseña es muy débil. Debe tener al menos 6 caracteres.',
-        'auth/missing-password': 'Ingresa una contraseña.',
-        'auth/invalid-credential': 'Correo o contraseña incorrectos.',
-        'auth/wrong-password': 'Correo o contraseña incorrectos.',
-        'auth/user-not-found': 'No existe una cuenta con ese correo.',
-        'auth/too-many-requests': 'Demasiados intentos. Intenta de nuevo más tarde.',
-        'auth/network-request-failed': 'Error de red. Verifica tu conexión.',
-        'auth/configuration-not-found': 'La autenticación de correo/contraseña no está habilitada en Firebase.'
-      };
-      return map[code] || customMessage;
-    }
-
-    function applyAuthenticatedUser(firebaseUser){
-      const user = {
-        id: firebaseUser.uid,
-        name: firebaseUser.displayName || firebaseUser.email || 'Usuario',
-        email: firebaseUser.email || '',
-        birth: ''
-      };
-      currentUser = user;
-      qs('.logo-text').textContent = `Digital Notes 2026 · ${user.name}`;
-      updateSettingsPanel();
-      startNotesSync(user.id);
-      return user;
-    }
-
-    function getFirstName(name=''){
-      return name.trim().split(/\s+/)[0] || 'usuario';
-    }
-
+    // Inserta un aviso temporal reutilizable.
     function showToast(message){
-      const toast = qs('#appToast');
       toast.textContent = message;
       toast.classList.add('show');
       clearTimeout(showToast.timer);
-      showToast.timer = setTimeout(()=>toast.classList.remove('show'), 2400);
+      showToast.timer = setTimeout(() => toast.classList.remove('show'), 2200);
     }
 
-    function getUserDisplayLabel(user = {}){
-      return user.name?.trim() || user.email?.trim() || 'usuario';
+    // Guarda/restaura la selección actual para insertar emoji en posición de cursor.
+    function rememberSelection(){
+      const selection = window.getSelection();
+      if(selection && selection.rangeCount > 0){
+        lastSelectionRange = selection.getRangeAt(0).cloneRange();
+      }
     }
 
-    function showWelcomeMessage(user, isNewUser=false){
-      const label = getUserDisplayLabel(user);
-      if(isNewUser){
-        showToast(`Registro exitoso, ${label}`);
+    function insertEmojiAtCursor(emoji){
+      editor.focus();
+      const selection = window.getSelection();
+      const range = lastSelectionRange ? lastSelectionRange.cloneRange() : (selection.rangeCount ? selection.getRangeAt(0) : null);
+      if(!range){
+        editor.append(document.createTextNode(emoji));
         return;
       }
-      showToast(`Hola de vuelta, ${label}`);
+      range.deleteContents();
+      const node = document.createTextNode(emoji);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      rememberSelection();
     }
 
-    async function clearSession(options = {}){
-      const { silent = false } = options;
-      stopNotesSync();
-      currentUser = null;
-      if(!silent) showToast('Sesión cerrada');
-      window.location.replace('login.html');
+    // Crea el panel real de emoji-mart con categorías + buscador.
+    const emojiPanel = document.createElement('div');
+    emojiPanel.style.position = 'absolute';
+    emojiPanel.style.display = 'none';
+    emojiPanel.style.zIndex = '1500';
+    emojiPanel.style.right = '20px';
+    emojiPanel.style.top = '120px';
+    const emojiPicker = new Picker({
+      data,
+      locale: 'es',
+      onEmojiSelect: (selection) => insertEmojiAtCursor(selection.native)
+    });
+    emojiPanel.appendChild(emojiPicker);
+    document.body.appendChild(emojiPanel);
+
+    // Normaliza timestamp de Firestore para ordenado consistente.
+    function toMillis(value){
+      if(!value) return 0;
+      if(typeof value === 'number') return value;
+      if(typeof value.toMillis === 'function') return value.toMillis();
+      return 0;
     }
 
-    async function syncSessionFromFirebaseUser(firebaseUser, options = {}){
-      const { silent = true } = options;
-      if(!firebaseUser){
-        if(currentUser) await clearSession({ silent:true });
-        return;
-      }
+    // Renderiza notas recientes (solo estado activa, orden updatedAt DESC).
+    function renderRecentNotes(){
+      notesGrid.innerHTML = '';
+      const term = (qs('#searchInput')?.value || '').trim().toLowerCase();
+      const activeNotes = notes
+        .filter((note) => note.estado === 'activa')
+        .filter((note) => {
+          if(!term) return true;
+          return (note.titulo || '').toLowerCase().includes(term) || stripHtml(note.contenido).toLowerCase().includes(term);
+        })
+        .sort((a,b) => toMillis(b.updatedAt) - toMillis(a.updatedAt));
 
-      const sessionUser = applyAuthenticatedUser(firebaseUser);
-      if(!silent) showWelcomeMessage(sessionUser, false);
-    }
-
-    async function bootstrapAuth(){
-      try {
-        const auth = getFirebaseAuthInstance();
-        await setPersistence(auth, browserLocalPersistence);
-        await new Promise((resolve, reject)=>{
-          const unsubscribe = onAuthStateChanged(auth, async user=>{
-            unsubscribe();
-            if(!user){
-              window.location.replace('login.html');
-              resolve();
-              return;
-            }
-            await syncSessionFromFirebaseUser(user, { silent:true });
-            resolve();
-          }, reject);
-        });
-      } catch(error){
-        console.error('Error de Firebase en bootstrapAuth:', error);
-        window.location.replace('login.html');
-      }
-    }
-
-    function updateSettingsPanel(){
-      if(!currentUser) return;
-      qs('#settingsUserName').textContent = `Nombre: ${currentUser.name}`;
-      qs('#settingsUserEmail').textContent = `Email: ${currentUser.email}`;
-      qs('#settingsUserBirth').textContent = `Nacimiento: ${currentUser.birth || 'No definido'}`;
-    }
-
-    // --- Storage ---
-    function loadState(){
-      state = getDefaultState();
-      if(state.darkMode) document.body.setAttribute('data-theme','dark');
-    }
-
-    async function runStateSave(){
-      while(hasQueuedSave){
-        hasQueuedSave = false;
-        isSaving = true;
-        await syncStateToFirestore();
-      }
-      isSaving = false;
-    }
-
-    async function saveState({ throwOnError = false } = {}){
-      hasQueuedSave = true;
-      if(!activeSavePromise){
-        activeSavePromise = runStateSave().finally(()=>{
-          activeSavePromise = null;
-          isSaving = false;
-        });
-      }
-
-      try {
-        await activeSavePromise;
-      } catch(error){
-        if(throwOnError) throw error;
-        console.error('Error guardando estado:', error);
-      }
-    }
-
-    // --- Dark mode ---
-    function toggleDarkMode(){
-      state.darkMode = !state.darkMode;
-      if(state.darkMode) document.body.setAttribute('data-theme','dark');
-      else document.body.removeAttribute('data-theme');
-      saveState();
-    }
-    qs('#darkModeBtn').onclick = toggleDarkMode;
-
-    // --- Render Notebooks ---
-    function renderNotebooks(){
-      const container = qs('#notebooksList'); container.innerHTML='';
-      const addDiv = document.createElement('div'); addDiv.className='notebook'; addDiv.innerHTML = `<div class='add-cover' id='addNotebookBtn'>+</div><p>Agregar portada</p>`; container.appendChild(addDiv);
-
-      state.notebooks.forEach(nb=>{
-        const el = document.createElement('div'); el.className='notebook';
-        el.dataset.id = nb.id;
-        const img = document.createElement('img');
-        const coverColor = encodeURIComponent(nb.coverColor || '#f08aba');
-        img.src = nb.cover || `data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"300\" height=\"400\"><rect width=\"100%\" height=\"100%\" fill=\"${coverColor}\"/></svg>`;
-        const dots = document.createElement('div'); dots.className='dots'; dots.textContent='⋮';
-        const menu = document.createElement('div'); menu.className='menu';
-        const editBtn = document.createElement('button'); editBtn.textContent='Editar portada';
-        const renameBtn = document.createElement('button'); renameBtn.textContent='Renombrar';
-        const delBtn = document.createElement('button'); delBtn.textContent='Eliminar';
-        menu.appendChild(editBtn); menu.appendChild(renameBtn); menu.appendChild(delBtn);
-        el.appendChild(img); el.appendChild(dots); el.appendChild(menu);
-        const p = document.createElement('p'); p.textContent = nb.name; el.appendChild(p);
-
-        // dragover/drop for notes
-        el.addEventListener('dragover', (e)=>{ e.preventDefault(); el.classList.add('drop-target'); });
-        el.addEventListener('dragleave', ()=> el.classList.remove('drop-target'));
-        el.addEventListener('drop', (e)=>{
-          e.preventDefault(); el.classList.remove('drop-target');
-          const noteId = e.dataTransfer.getData('text/note-id');
-          if(noteId){ moveNoteToNotebook(noteId, nb.id); }
-        });
-
-        dots.addEventListener('click', e=>{ e.stopPropagation(); closeAllMenus(); menu.style.display = menu.style.display==='block' ? 'none' : 'block'; });
-        editBtn.addEventListener('click', e=>{ e.stopPropagation(); openNotebookModal(nb); menu.style.display='none'; });
-        renameBtn.addEventListener('click', e=>{ e.stopPropagation(); openNotebookModal(nb, {renameOnly:true}); menu.style.display='none'; });
-        delBtn.addEventListener('click', e=>{ e.stopPropagation(); if(confirm('¿Eliminar cuaderno y sus notas?')) deleteNotebook(nb.id); menu.style.display='none'; });
-        img.addEventListener('click', ()=>{ setActiveNotebookCard(nb.id); openNotebookView(nb.id); });
-        p.addEventListener('click', ()=>{ setActiveNotebookCard(nb.id); openNotebookView(nb.id); });
-
-        container.appendChild(el);
-      });
-      qs('#addNotebookBtn')?.addEventListener('click', ()=> openNotebookModal());
-      setActiveNotebookCard(activeNotebookId);
-      populateNotebookFilters();
-    }
-    function closeAllMenus(){ qsa('.menu').forEach(m=>m.style.display='none'); }
-
-    function setActiveNotebookCard(notebookId){
-      qsa('#notebooksList .notebook[data-id]').forEach(card=>{
-        card.classList.toggle('active-lift', card.dataset.id === notebookId);
-      });
-    }
-
-    // --- Render Notes ---
-    function renderNotes(){
-      const grid = qs('#notesGrid'); grid.innerHTML='';
-      const filterId = qs('#filterNotebook').value;
-      const searchVal = qs('#searchInput').value.toLowerCase();
-      const knownNotebookIds = new Set(state.notebooks.map(nb=>nb.id));
-      const notesToRender = state.notes.filter(n=>{
-        if(n.deleted || n.estado === 'papelera') return false;
-        const effectiveNotebook = knownNotebookIds.has(n.notebookId) ? n.notebookId : state.notebooks[0]?.id;
-        const matchNotebook = filterId==='all'||effectiveNotebook===filterId;
-        const matchSearch = !searchVal || (stripHtml(n.content).toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal));
-        return matchNotebook && matchSearch;
-      }).sort((a,b)=>b.updated - a.updated);
-
-      notesToRender.forEach(n=>{
-        const card = document.createElement('div'); card.className='note-card'; card.draggable=true;
-        card.dataset.id=n.id;
-        const title = document.createElement('div'); title.className='note-title'; title.textContent=truncate(n.title,35);
-        const body = document.createElement('div'); body.className='note-body preview'; body.textContent = truncate(stripHtml(n.content), 160);
-        const firstImage = getFirstImageSrc(n.content);
-        const meta = document.createElement('div'); meta.className='note-meta'; meta.textContent = new Date(n.updated).toLocaleString(getLocaleTag());
-        card.appendChild(title);
-        card.appendChild(body);
-        if(firstImage){ const thumb = document.createElement('img'); thumb.className='note-thumb small'; thumb.src=firstImage; thumb.alt='Imagen de la nota'; card.appendChild(thumb); }
-        card.appendChild(meta);
-        if(n.bgColor) card.style.background=n.bgColor;
-        if(n.textColor) card.style.color=n.textColor;
-        card.addEventListener('click', ()=>openEditor(n));
-        card.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/note-id', n.id); });
-        grid.appendChild(card);
-      });
-    }
-
-    function renderTemplateGallery(){
-      const grid = qs('#templateGridEditor');
-      if(!grid) return;
-      grid.innerHTML = '';
-      TEMPLATE_ITEMS.forEach(template=>{
-        const card = document.createElement('button');
-        card.type = 'button';
-        card.className = 'template-card';
-        card.innerHTML = `<img src="${template.src}" alt="${template.name}"><span>${template.name}</span>`;
-        card.addEventListener('click', ()=>openTemplatePreview(template.src));
-        grid.appendChild(card);
-      });
-    }
-
-    function getNotebookNotes(notebookId){
-      return state.notes.filter(n=>n.notebookId===notebookId && !n.deleted && n.estado !== 'papelera').sort((a,b)=>a.created - b.created);
-    }
-
-    let activeNotebookId = null;
-    let bookPageIndex = 0;
-    let isBookOpen = false;
-    let isBookAnimating = false;
-    const BOOK_TURN_MS = 940;
-
-    function openNotebookView(notebookId){
-      activeNotebookId = notebookId;
-      setActiveNotebookCard(notebookId);
-      const nb = state.notebooks.find(n=>n.id===notebookId);
-      applyNotebookBackgroundControls(notebookId);
-      qs('#notebookViewTitle').textContent = nb ? `Notas de: ${nb.name}` : 'Página del cuaderno';
-      qs('#notebookViewSubtitle').textContent = nb ? `Sección exclusiva para las notas guardadas en ${nb.name}.` : 'Aquí verás las notas recientes de este cuaderno.';
-      const grid = qs('#notebookNotesGrid');
-      qs('#view-cuadernos').style.display = 'none';
-      qs('#view-notebook-notes').style.display = 'block';
-      resetHeaderStates();
-      grid.innerHTML = '';
-      const notes = getNotebookNotes(notebookId);
-      if(notes.length === 0){
+      if(activeNotes.length === 0){
         const empty = document.createElement('div');
-        empty.textContent = 'Este cuaderno aún no tiene notas.';
-        grid.appendChild(empty);
-      } else {
-        notes.forEach(n=>{
-          const card = document.createElement('div');
-          card.className = 'note-card';
-          const title = document.createElement('div'); title.className='note-title'; title.textContent=truncate(n.title || 'Sin título', 60);
-          const body = document.createElement('div'); body.className='note-body preview'; body.textContent = truncate(stripHtml(n.content), 250);
-          const firstImage = getFirstImageSrc(n.content);
-          const meta = document.createElement('div'); meta.className='note-meta'; meta.textContent = new Date(n.updated).toLocaleString(getLocaleTag());
-          if(n.bgColor) card.style.background = n.bgColor;
-          if(n.textColor) card.style.color = n.textColor;
-          card.appendChild(title);
-          card.appendChild(body);
-          if(firstImage){ const thumb=document.createElement('img'); thumb.className='note-thumb small'; thumb.src=firstImage; thumb.alt='Imagen de la nota'; card.appendChild(thumb); }
-          card.appendChild(meta);
-          card.addEventListener('click', ()=>openEditor(n));
-          grid.appendChild(card);
-        });
-      }
-    }
-
-    function closeNotebookView(){
-      qs('#view-notebook-notes').style.display='none';
-      qs('#view-cuadernos').style.display='block';
-      activeNotebookId = null;
-      resetHeaderStates();
-    }
-
-
-    function refreshNotebookWorkspace(){
-      if(activeNotebookId && qs('#view-notebook-notes').style.display === 'block'){
-        openNotebookView(activeNotebookId);
-      }
-    }
-
-    function applyNotebookBackgroundControls(notebookId){
-      const nb = state.notebooks.find(n=>n.id===notebookId);
-      qs('#bookBgColor').value = nb?.bookBgColor || nb?.coverColor || '#ffcae3';
-    }
-
-    function setBookCover(notebook){
-      const coverImg = qs('#bookCoverImage');
-      const coverFallback = qs('#bookCoverFallback');
-      coverImg.style.display = 'none';
-      if(notebook?.cover){
-        coverImg.src = notebook.cover;
-        coverImg.alt = `Portada de ${notebook.name}`;
-        coverImg.style.display = 'block';
-        coverFallback.style.display = 'none';
-      } else {
-        coverFallback.style.display = 'flex';
-        coverFallback.textContent = notebook?.name || 'Sin portada';
-        coverFallback.style.background = notebook?.coverColor || '#f08aba';
-      }
-      const bookBg = notebook?.bookBgImage ? `url(${notebook.bookBgImage}) center / cover no-repeat` : (notebook?.bookBgColor || notebook?.coverColor || 'linear-gradient(150deg,#ffcae3,#f7b7d8)');
-      qs('#bookContainer').style.background = bookBg;
-    }
-
-    function showBookCover(){
-      isBookOpen = false;
-      qs('#bookCoverScreen').style.display = 'flex';
-      const spread = qs('#bookSpread');
-      spread.style.display = 'none';
-      spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
-      clearPageTurner();
-    }
-
-    function populateTurnFace(prefix, note, displayIndex, total){
-      const title = qs(`#${prefix}Title`);
-      const content = qs(`#${prefix}Content`);
-      const meta = qs(`#${prefix}Meta`);
-      const face = title?.closest('.turn-face');
-      if(!title || !content || !meta) return;
-      if(!note){
-        title.textContent = 'Hoja disponible';
-        content.innerHTML = '<p class="book-empty">Esta hoja está libre para tu próxima nota.</p>';
-        meta.textContent = '';
-        if(face){
-          face.style.background = '#f6ecd2';
-          face.style.color = '';
-        }
-        return;
-      }
-      title.textContent = note.title || 'Sin título';
-      content.innerHTML = note.content || '<p class="book-empty">Sin contenido.</p>';
-      meta.textContent = `Hoja ${displayIndex} de ${total} · ${new Date(note.updated).toLocaleDateString(getLocaleTag())}`;
-      if(face){
-        face.style.background = note.bgColor || '#f6ecd2';
-        face.style.color = note.textColor || '';
-      }
-    }
-
-    function clearPageTurner(){
-      const turner = qs('#bookPageTurner');
-      if(!turner) return;
-      turner.classList.remove('active','forward','backward');
-    }
-
-    function animatePageTurn(direction, fromLeftNote, fromRightNote, toLeftNote, toRightNote, total){
-      const turner = qs('#bookPageTurner');
-      if(!turner) return;
-      clearPageTurner();
-      if(direction === 'forward'){
-        populateTurnFace('turnFaceFront', fromRightNote, bookPageIndex, total);
-        populateTurnFace('turnFaceBack', toLeftNote, Math.max(1, bookPageIndex + 1), total);
-        turner.classList.add('forward');
-      } else {
-        populateTurnFace('turnFaceFront', fromLeftNote, bookPageIndex + 1, total);
-        populateTurnFace('turnFaceBack', toRightNote, Math.max(1, bookPageIndex + 2), total);
-        turner.classList.add('backward');
-      }
-      requestAnimationFrame(()=>turner.classList.add('active'));
-      setTimeout(clearPageTurner, BOOK_TURN_MS + 30);
-    }
-
-    function animateBookSurfaceTransition(fromEl, toEl){
-      if(!fromEl || !toEl) return;
-      fromEl.classList.add('flipping-out');
-      setTimeout(()=>{
-        fromEl.style.display = 'none';
-        fromEl.classList.remove('flipping-out');
-        toEl.style.display = toEl.id === 'bookSpread' ? 'grid' : 'flex';
-        toEl.classList.add('flipping-out');
-        requestAnimationFrame(()=>toEl.classList.remove('flipping-out'));
-      }, 240);
-    }
-
-    function openNotebookPages(){
-      if(isBookAnimating) return;
-      isBookOpen = true;
-      animateBookSurfaceTransition(qs('#bookCoverScreen'), qs('#bookSpread'));
-      updateBookPage('initial');
-    }
-
-    function openBookMode(){
-      if(!activeNotebookId) return;
-      bookPageIndex = 0;
-      const nb = state.notebooks.find(n=>n.id===activeNotebookId);
-      qs('#bookModeTitle').textContent = nb ? `Modo Libreta: ${nb.name}` : 'Modo Libreta';
-      setBookCover(nb);
-      showBookCover();
-      qs('#overlayBookMode').style.display='flex';
-    }
-
-    function closeBookMode(){
-      qs('#overlayBookMode').style.display='none';
-      showBookCover();
-      isBookAnimating = false;
-    }
-
-    function fillBookLeaf(side, note, displayIndex, total){
-      const title = qs(`#book${side}Title`);
-      const content = qs(`#book${side}Content`);
-      const meta = qs(`#book${side}Meta`);
-      const page = qs(`#book${side}Page`);
-      if(!note){
-        title.textContent = 'Hoja disponible';
-        content.innerHTML = '<p class="book-empty">Esta hoja está libre para tu próxima nota.</p>';
-        meta.textContent = '';
-        page.style.background = '#f6ecd2';
-        page.style.color = '';
-        return;
-      }
-      title.textContent = note.title || 'Sin título';
-      content.innerHTML = note.content || '<p class="book-empty">Sin contenido.</p>';
-      meta.textContent = `Hoja ${displayIndex} de ${total} · ${new Date(note.updated).toLocaleDateString(getLocaleTag())}`;
-      page.style.background = note.bgColor || '#f6ecd2';
-      page.style.color = note.textColor || '';
-    }
-
-
-    function fillBookUnderlay(leftNote, rightNote, leftDisplayIndex, total){
-      fillBookLeaf('UnderLeft', leftNote, leftDisplayIndex, total);
-      fillBookLeaf('UnderRight', rightNote, leftDisplayIndex + 1, total);
-    }
-
-    function updateBookPage(direction='forward'){
-      if(isBookAnimating) return;
-      const notes = getNotebookNotes(activeNotebookId);
-      const spread = qs('#bookSpread');
-      const nb = state.notebooks.find(n=>n.id===activeNotebookId);
-      qs('#bookModeTitle').textContent = nb ? `Modo Libreta: ${nb.name}` : 'Modo Libreta';
-      if(notes.length === 0){
-        fillBookLeaf('Left', null, 0, 0);
-        fillBookLeaf('Right', null, 0, 0);
-        fillBookUnderlay(null, null, 0, 0);
-        qs('#bookLeftTitle').textContent = 'Sin notas';
-        qs('#bookLeftContent').innerHTML = '<p class="book-empty">Agrega una nota para empezar tu libreta.</p>';
-        qs('#bookRightTitle').textContent = 'Libreta lista';
-        qs('#bookRightContent').innerHTML = '<p class="book-empty">Cada nota ocupará solo una hoja.</p>';
-        clearPageTurner();
-        spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
-        return;
-      }
-      const leftIndex = bookPageIndex;
-      const rightIndex = bookPageIndex + 1;
-      const currentLeft = notes[leftIndex] || null;
-      const currentRight = notes[rightIndex] || null;
-      const targetPageIndex = direction === 'initial'
-        ? bookPageIndex
-        : (direction === 'back'
-          ? Math.max(0, bookPageIndex - 2)
-          : Math.min(Math.max(0, notes.length - 1), bookPageIndex + 2));
-      const normalizedTargetIndex = targetPageIndex % 2 === 0 ? targetPageIndex : targetPageIndex - 1;
-      const targetLeft = notes[normalizedTargetIndex] || null;
-      const targetRight = notes[normalizedTargetIndex + 1] || null;
-
-      const shouldAnimateTurn = direction !== 'initial';
-      spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
-
-      if(shouldAnimateTurn){
-        isBookAnimating = true;
-        fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
-        fillBookLeaf('Left', currentLeft, leftIndex + 1, notes.length);
-        fillBookLeaf('Right', currentRight, rightIndex + 1, notes.length);
-        animatePageTurn(direction === 'back' ? 'backward' : 'forward', currentLeft, currentRight, targetLeft, targetRight, notes.length);
-
-        requestAnimationFrame(()=>{
-          spread.classList.add('turning', direction === 'back' ? 'flip-back' : 'flip-forward', direction === 'back' ? 'turning-back' : 'turning-forward');
-          setTimeout(()=>{
-            fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
-            fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
-            spread.classList.remove('flip-forward','flip-back','turning','turning-forward','turning-back');
-            bookPageIndex = normalizedTargetIndex;
-            isBookAnimating = false;
-          }, BOOK_TURN_MS);
-        });
-      } else {
-        clearPageTurner();
-        fillBookUnderlay(targetLeft, targetRight, normalizedTargetIndex + 1, notes.length);
-        fillBookLeaf('Left', targetLeft, normalizedTargetIndex + 1, notes.length);
-        fillBookLeaf('Right', targetRight, normalizedTargetIndex + 2, notes.length);
-      }
-
-      if(!shouldAnimateTurn){
-        bookPageIndex = normalizedTargetIndex;
-      }
-    }
-
-    // --- Events and UI wiring ---
-    qs('#filterNotebook').addEventListener('change', renderNotes);
-    qs('#searchInput').addEventListener('input', renderNotes);
-    qs('#closeEditor').addEventListener('click', ()=>closeEditor());
-    document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeEditor(); qs('#overlayNotebook').style.display='none'; closeNotebookView(); closeBookMode(); closeCalendarModal(); } });
-    qs('#closeNotebookView').addEventListener('click', closeNotebookView);
-    qs('#openBookModeInline').addEventListener('click', openBookMode);
-    qs('#bookBgColor').addEventListener('input', async (e)=>{
-      if(!activeNotebookId) return;
-      const nb = state.notebooks.find(n=>n.id===activeNotebookId);
-      if(!nb) return;
-      nb.bookBgColor = e.target.value;
-      nb.bookBgImage = null;
-      await saveState();
-      setBookCover(nb);
-    });
-    qs('#resetBookBg').addEventListener('click', async ()=>{
-      if(!activeNotebookId) return;
-      const nb = state.notebooks.find(n=>n.id===activeNotebookId);
-      if(!nb) return;
-      nb.bookBgImage = null;
-      nb.bookBgColor = nb.coverColor || '#ffcae3';
-      applyNotebookBackgroundControls(activeNotebookId);
-      await saveState();
-      setBookCover(nb);
-    });
-    qs('#exitBookMode').addEventListener('click', closeBookMode);
-    qs('#backToNotebookView').addEventListener('click', closeBookMode);
-    qs('#openNotebookPages').addEventListener('click', openNotebookPages);
-    qs('#tutorialClose').addEventListener('click', ()=>{ qs('#overlayTutorial').style.display='none'; localStorage.setItem(ONBOARDING_KEY, 'done'); });
-    qs('#prevPageBtn').addEventListener('click', ()=>{
-      const notes = getNotebookNotes(activeNotebookId);
-      if(notes.length === 0 || !isBookOpen || isBookAnimating || bookPageIndex === 0) return;
-      updateBookPage('back');
-    });
-    qs('#nextPageBtn').addEventListener('click', ()=>{
-      const notes = getNotebookNotes(activeNotebookId);
-      if(notes.length === 0 || !isBookOpen || isBookAnimating) return;
-      const maxIndex = notes.length <= 1 ? 0 : (notes.length % 2 === 0 ? notes.length - 2 : notes.length - 1);
-      if(bookPageIndex >= maxIndex) return;
-      updateBookPage('forward');
-    });
-
-    // --- Notes CRUD ---
-    let editingNote=null;
-    let currentImage = null;
-    let currentFontFamily = '';
-    let noteSaveInFlight = null;
-    let pendingNoteSave = false;
-    let editorVisualState = {
-      backgroundColor: null,
-      textColor: null,
-      fontFamily: null,
-      fontSize: null,
-      templateId: null
-    };
-
-    function getEditorFontSize(){
-      return qs('#editor').style.fontSize || editorVisualState.fontSize || null;
-    }
-
-    function getImagesFromHtml(html = ''){
-      const div = document.createElement('div');
-      div.innerHTML = html;
-      return [...div.querySelectorAll('img')].map(img=>img.getAttribute('src')).filter(Boolean);
-    }
-
-    function buildNotePayloadForSave(noteId, createdAt){
-      const title = qs('#noteTitle').value;
-      const content = qs('#editor').innerHTML;
-      const notebookId = qs('#editorNotebook').value || state.notebooks[0].id;
-      const now = Date.now();
-      const backgroundColor = editorVisualState.backgroundColor;
-      const textColor = editorVisualState.textColor;
-      const fontFamily = currentFontFamily || editorVisualState.fontFamily || null;
-      const fontSize = getEditorFontSize();
-      const images = getImagesFromHtml(content);
-      return {
-        id: noteId,
-        title,
-        content,
-        notebookId,
-        notebook: notebookId,
-        fontFamily,
-        fontSize,
-        textColor,
-        bgColor: backgroundColor,
-        backgroundColor,
-        templateId: editorVisualState.templateId || null,
-        images,
-        created: createdAt,
-        updated: now,
-        createdAt: createdAt,
-        updatedAt: now,
-        estado: 'activa',
-        deleted: false
-      };
-    }
-
-    function openEditor(note=null){
-      editingNote = note;
-      qs('#overlayEditor').style.display='flex';
-      qs('#noteTitle').value = note?.title||'';
-      qs('#editor').innerHTML = note?.content||'';
-      currentFontFamily = note?.fontFamily || '';
-      applyEditorFont(currentFontFamily);
-      updateActiveFontUI();
-      qs('#deleteNoteBtn').style.display = note ? 'inline-block':'none';
-      populateEditorNotebook();
-      qs('#imageControls').style.display = 'none';
-      currentImage = null;
-      qs('#saveNote').textContent = 'Guardar';
-      qs('#saveNote').classList.remove('saving','saved','error');
-      qs('#editorModal').classList.remove('fullscreen');
-      qs('#fullscreenEditorBtn').textContent = '⛶ Pantalla completa';
-      editorVisualState = {
-        backgroundColor: note?.backgroundColor || note?.bgColor || null,
-        textColor: note?.textColor || null,
-        fontFamily: note?.fontFamily || null,
-        fontSize: note?.fontSize || null,
-        templateId: note?.templateId || null
-      };
-      if(note){
-        if(editorVisualState.backgroundColor) qs('#colorPreview').style.background = editorVisualState.backgroundColor;
-        qs('#editor').style.background = editorVisualState.backgroundColor || '';
-        qs('#editor').style.color = editorVisualState.textColor || '';
-        qs('#editor').style.fontSize = editorVisualState.fontSize || '';
-        if(editorVisualState.textColor) qs('#textColorToolPicker').value = editorVisualState.textColor;
-      } else {
-        qs('#colorPreview').style.background = '';
-        qs('#editor').style.background = '';
-        qs('#editor').style.color = '';
-        qs('#editor').style.fontSize = '';
-      }
-      editorLastSavedSnapshot = buildEditorSnapshot();
-      qs('#editor').focus();
-    }
-    function closeEditor(){
-      clearTimeout(editorAutosaveTimer);
-      setRecentSaveIndicator('');
-      qs('#overlayEditor').style.display='none';
-      editingNote=null;
-    }
-
-    qs('#editor').addEventListener('keydown', (event)=>{
-      if(event.key === 'PageUp' || (event.altKey && event.key === 'ArrowUp')){
-        event.preventDefault();
-        qs('#editor').scrollBy({top:-240, behavior:'smooth'});
-        return;
-      }
-      if(event.key === 'PageDown' || (event.altKey && event.key === 'ArrowDown')){
-        event.preventDefault();
-        qs('#editor').scrollBy({top:240, behavior:'smooth'});
-      }
-    });
-
-    qs('#saveNote').addEventListener('click', async ()=>{
-      try {
-        await saveCurrentNote({ shouldClose:false, throwOnError:true });
-      } catch(error){
-        console.error('Error al guardar manualmente:', error);
-      }
-    });
-    qs('#editor').addEventListener('input', onUserChange);
-    qs('#noteTitle').addEventListener('input', onUserChange);
-    qs('#editorNotebook').addEventListener('change', onUserChange);
-
-    const editorMutationObserver = new MutationObserver(()=>onUserChange());
-    editorMutationObserver.observe(qs('#editor'), { childList:true, subtree:true, characterData:true, attributes:true });
-
-    qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
-    qs('#deleteNoteBtn').addEventListener('click', async ()=>{
-      if(editingNote && confirm('¿Mover nota a papelera?')){
-        await moveNoteToTrash(editingNote.id);
-        closeEditor();
-      }
-    });
-
-
-    const WEEK_NAMES = ['L','M','M','J','V','S','D'];
-    let calendarDate = new Date();
-    let selectedCalendarDay = null;
-
-    function startOfDay(date){
-      return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    }
-
-    function getStableCalendarDate(){
-      const fallback = startOfDay(new Date());
-      const raw = localStorage.getItem(CALENDAR_STABLE_KEY);
-      if(!raw){
-        localStorage.setItem(CALENDAR_STABLE_KEY, JSON.stringify({
-          anchorDate: fallback.getTime(),
-          anchorSavedAt: Date.now()
-        }));
-        return fallback;
-      }
-      try{
-        const data = JSON.parse(raw);
-        if(!data?.anchorDate || !data?.anchorSavedAt) return fallback;
-        const elapsedMs = Math.max(0, Date.now() - Number(data.anchorSavedAt));
-        const elapsedDays = Math.floor(elapsedMs / 86400000);
-        const base = startOfDay(new Date(Number(data.anchorDate)));
-        base.setDate(base.getDate() + elapsedDays);
-        return base;
-      }catch(_e){
-        return fallback;
-      }
-    }
-
-    function saveStableCalendarDate(date){
-      const stable = startOfDay(date);
-      localStorage.setItem(CALENDAR_STABLE_KEY, JSON.stringify({
-        anchorDate: stable.getTime(),
-        anchorSavedAt: Date.now()
-      }));
-    }
-
-    function openCalendarModal(){
-      const stableDate = getStableCalendarDate();
-      calendarDate = new Date(stableDate);
-      selectedCalendarDay = new Date(stableDate);
-      renderCalendar();
-      qs('#overlayCalendar').style.display = 'flex';
-    }
-
-    function closeCalendarModal(){
-      qs('#overlayCalendar').style.display = 'none';
-    }
-
-    function renderCalendar(){
-      const grid = qs('#calendarGrid');
-      const year = calendarDate.getFullYear();
-      const month = calendarDate.getMonth();
-      const locale = getLocaleTag();
-      const monthLabel = new Date(year, month, 1).toLocaleDateString(locale, {month:'long', year:'numeric'});
-      qs('#calendarTitle').textContent = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
-      grid.innerHTML = '';
-      WEEK_NAMES.forEach(day=>{
-        const wd = document.createElement('div');
-        wd.className = 'calendar-weekday';
-        wd.textContent = day;
-        grid.appendChild(wd);
-      });
-      const first = new Date(year, month, 1);
-      const firstDay = (first.getDay() + 6) % 7;
-      const days = new Date(year, month + 1, 0).getDate();
-      for(let i=0;i<firstDay;i++){
-        const blank = document.createElement('div');
-        grid.appendChild(blank);
-      }
-      for(let day=1; day<=days; day++){
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'calendar-day';
-        btn.textContent = day;
-        if(
-          selectedCalendarDay &&
-          selectedCalendarDay.getFullYear() === year &&
-          selectedCalendarDay.getMonth() === month &&
-          selectedCalendarDay.getDate() === day
-        ){
-          btn.classList.add('active');
-        }
-        btn.addEventListener('click', ()=>{
-          selectedCalendarDay = new Date(year, month, day);
-          saveStableCalendarDate(selectedCalendarDay);
-          qsa('.calendar-day').forEach(d=>d.classList.remove('active'));
-          btn.classList.add('active');
-        });
-        grid.appendChild(btn);
-      }
-    }
-
-    function setRecentSaveIndicator(message=''){
-      const indicator = qs('#recentSaveIndicator');
-      if(!indicator) return;
-      clearTimeout(recentIndicatorTimer);
-      if(!message){
-        indicator.classList.remove('visible');
-        indicator.textContent = '';
-        return;
-      }
-      indicator.textContent = message;
-      indicator.classList.add('visible');
-      if(message === 'Guardado'){
-        recentIndicatorTimer = setTimeout(()=>{
-          indicator.classList.remove('visible');
-          indicator.textContent = '';
-        }, 1500);
-      }
-    }
-
-    function buildEditorSnapshot(){
-      const notebookId = qs('#editorNotebook').value || state.notebooks[0]?.id || '';
-      return JSON.stringify({
-        title: qs('#noteTitle').value,
-        content: qs('#editor').innerHTML,
-        notebookId,
-        visual: editorVisualState,
-        fontFamily: currentFontFamily || '',
-        fontSize: getEditorFontSize() || ''
-      });
-    }
-
-    function queueEditorAutosave(){
-      if(qs('#overlayEditor').style.display !== 'flex') return;
-      clearTimeout(editorAutosaveTimer);
-      setRecentSaveIndicator('Guardando...');
-      editorAutosaveTimer = setTimeout(async ()=>{
-        if(buildEditorSnapshot() === editorLastSavedSnapshot) return;
-        await saveCurrentNote({ shouldClose:false, throwOnError:false });
-      }, EDITOR_AUTOSAVE_DELAY_MS);
-    }
-
-    function onUserChange(){
-      queueEditorAutosave();
-    }
-
-
-
-
-    qs('#calendarPrev').addEventListener('click', ()=>{ calendarDate.setMonth(calendarDate.getMonth()-1); renderCalendar(); });
-    qs('#calendarNext').addEventListener('click', ()=>{ calendarDate.setMonth(calendarDate.getMonth()+1); renderCalendar(); });
-    qs('#closeCalendar').addEventListener('click', closeCalendarModal);
-    qs('#insertCalendarDate').addEventListener('click', ()=>{
-      if(!selectedCalendarDay) return alert('Selecciona una fecha');
-      const formatted = selectedCalendarDay.toLocaleDateString(getLocaleTag(), { day:'2-digit', month:'long', year:'numeric' });
-      insertHtmlAtCursor(`<p><strong>📅 ${formatted}</strong></p>`);
-      onUserChange();
-      closeCalendarModal();
-    });
-
-    async function saveCurrentNote({ shouldClose=false, throwOnError=false } = {}){
-      if(noteSaveInFlight){
-        pendingNoteSave = true;
-        await noteSaveInFlight;
-        if(pendingNoteSave){
-          pendingNoteSave = false;
-          return saveCurrentNote({ shouldClose:false, throwOnError });
-        }
+        empty.className = 'note-card';
+        empty.textContent = 'No hay notas recientes todavía.';
+        notesGrid.appendChild(empty);
         return;
       }
 
-      if(buildEditorSnapshot() === editorLastSavedSnapshot){
-        setRecentSaveIndicator('Guardado');
-        if(shouldClose){ editingNote=null; closeEditor(); }
-        return;
-      }
-
-      const run = async ()=>{
-        setRecentSaveIndicator('Guardando...');
-        const now = Date.now();
-        const isNewNote = !editingNote;
-        const noteId = editingNote?.id || generateId();
-        const createdAt = editingNote?.created || editingNote?.createdAt || now;
-        const fullNotePayload = {
-          ...buildNotePayloadForSave(noteId, createdAt),
-          estado:'activa',
-          deleted:false
-        };
-
-        if(editingNote){
-          Object.assign(editingNote, fullNotePayload);
-        } else {
-          editingNote = fullNotePayload;
-          state.notes.push(editingNote);
-        }
-
-        state.notes = state.notes.filter(note=>note.id!==editingNote.id || note===editingNote);
-        state.trash = state.trash.filter(note=>note.id!==editingNote.id);
-
-        if(currentUser){
-          const firestoreDb = getFirebaseFirestoreDb();
-          const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
-          try {
-            await setDoc(noteRef, {
-              ...fullNotePayload,
-              titulo: fullNotePayload.title,
-              contenido: fullNotePayload.content,
-              estado: 'activa',
-              createdAt: isNewNote ? serverTimestamp() : editingNote.createdAt || serverTimestamp(),
-              updatedAt: serverTimestamp()
-            }, { merge:true });
-          } catch(error){
-            console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
-            if(throwOnError) throw error;
-          }
-        }
-
-        await saveState({ throwOnError });
-        editorLastSavedSnapshot = buildEditorSnapshot();
-        renderNotes();
-        refreshNotebookWorkspace();
-        setRecentSaveIndicator('Guardado');
-        if(shouldClose){ editingNote=null; closeEditor(); }
-      };
-
-      noteSaveInFlight = run();
-      try {
-        await noteSaveInFlight;
-      } finally {
-        noteSaveInFlight = null;
+      for(const note of activeNotes){
+        const card = document.createElement('div');
+        card.className = 'note-card';
+        card.innerHTML = `
+          <div class="note-title">${note.titulo || 'Sin título'}</div>
+          <div class="note-body preview">${stripHtml(note.contenido)}</div>
+          <div class="note-meta">Actualizada: ${new Date(toMillis(note.updatedAt)).toLocaleString()}</div>
+        `;
+        card.addEventListener('click', () => openEditor(note.id));
+        notesGrid.appendChild(card);
       }
     }
 
-    // --- Notebooks CRUD ---
-    let editingNotebook=null; let renameOnly=false;
-    function openNotebookModal(nb=null,opt={}){
-      editingNotebook=nb||null;
-      renameOnly=opt.renameOnly||false;
-      qs('#overlayNotebook').style.display='flex';
-      qs('#nbModalTitle').textContent = nb ? (renameOnly?'Renombrar cuaderno':'Editar cuaderno'):'Nuevo cuaderno';
-      qs('#nbName').value = nb?.name||'';
-      qs('#nbCoverColor').value = nb?.coverColor || '#f08aba';
-      const coverInput = qs('#nbCoverFile');
-      coverInput.value = '';
-      coverInput.disabled = renameOnly;
-    }
-    qs('#nbCancel').addEventListener('click', ()=>qs('#overlayNotebook').style.display='none');
-    qs('#nbSave').addEventListener('click', async ()=>{
-      const name = qs('#nbName').value.trim(); if(!name) return alert('Nombre requerido');
-      if(editingNotebook){
-        editingNotebook.name=name;
-        editingNotebook.bookBgColor = editingNotebook.bookBgColor || editingNotebook.coverColor || '#ffcae3';
-        editingNotebook.bookBgImage = editingNotebook.bookBgImage || null;
-        if(!renameOnly && qs('#nbCoverFile').files[0]) editingNotebook.cover = await fileToDataUrl(qs('#nbCoverFile').files[0]);
-        editingNotebook.coverColor = qs('#nbCoverColor').value;
-      } else {
-        const cover = qs('#nbCoverFile').files[0]? await fileToDataUrl(qs('#nbCoverFile').files[0]):null;
-        const coverColor = qs('#nbCoverColor').value;
-        state.notebooks.push({id:generateId(),name,cover,coverColor,bookBgColor:coverColor,bookBgImage:null});
-      }
-      saveState(); renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); qs('#overlayNotebook').style.display='none';
-    });
-    async function deleteNotebook(id){
-      if(!confirm('Eliminar libreta y mover sus notas a papelera. ¿Continuar?')) return;
-      const notebookNotes = state.notes.filter(n=>n.notebookId===id);
-      const remainingNotes = state.notes.filter(n=>n.notebookId!==id);
-      const trashed = notebookNotes.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: Date.now() }));
-      await Promise.all(trashed.map(note=>syncTrashedNoteToFirestore(note)));
-      state.notes = remainingNotes;
-      state.trash = [...state.trash.filter(t=>!notebookNotes.some(n=>n.id===t.id)), ...trashed];
-      ensureDistinctCollections(state);
-      state.notebooks = state.notebooks.filter(nb=>nb.id!==id);
-      await saveState();
-      renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); renderTrash();
-    }
-
-    function populateNotebookFilters(){
-      const sel = qs('#filterNotebook'); const editorSel=qs('#editorNotebook');
-      sel.innerHTML='<option value="all">Todas</option>';
-      editorSel.innerHTML='';
-      state.notebooks.forEach(nb=>{ const o1=document.createElement('option'); o1.value=nb.id; o1.textContent=nb.name; sel.appendChild(o1); const o2=o1.cloneNode(true); editorSel.appendChild(o2); });
-    }
-    function populateEditorNotebook(){ populateNotebookFilters(); if(editingNote) qs('#editorNotebook').value = editingNote.notebookId; }
-
-    function moveNoteToNotebook(noteId, nbId){ const note = state.notes.find(n=>n.id===noteId); if(note){ note.notebookId=nbId; note.notebook=nbId; saveState(); renderNotes(); refreshNotebookWorkspace(); } }
-
-
-    async function moveNoteToTrash(noteId){
-      const note = state.notes.find(n=>n.id===noteId);
-      if(!note) return;
-      state.notes = state.notes.filter(n=>n.id!==noteId);
-      state.trash = state.trash.filter(n=>n.id!==noteId);
-      const trashedNote = { ...note, estado:'papelera', deleted:true, deletedAt: Date.now() };
-      state.trash.push(trashedNote);
-      ensureDistinctCollections(state);
-      await syncTrashedNoteToFirestore(trashedNote);
-      await saveState();
-      renderNotes();
-      refreshNotebookWorkspace();
-      renderTrash();
-      if(editingNote?.id === noteId){
-        closeEditor();
-      }
-    }
-
-    async function restoreTrashedNote(noteId){
-      const note = state.trash.find(n=>n.id===noteId);
-      if(!note) return;
-      state.trash = state.trash.filter(n=>n.id!==noteId);
-      const restored = { ...note, estado:'activa', deleted:false };
-      delete restored.deletedAt;
-      if(!state.notebooks.some(nb=>nb.id===restored.notebookId)){
-        restored.notebookId = state.notebooks[0]?.id;
-        restored.notebook = restored.notebookId;
-      }
-      state.notes = state.notes.filter(n=>n.id!==noteId);
-      state.notes.push(restored);
-      ensureDistinctCollections(state);
-      await syncRestoredNoteToFirestore(restored);
-      await saveState();
-      renderNotes();
-      refreshNotebookWorkspace();
-      renderTrash();
-    }
-
-    async function permanentlyDeleteTrashedNote(noteId){
-      const exists = state.trash.some(n=>n.id===noteId);
-      if(!exists) return;
-      state.trash = state.trash.filter(n=>n.id!==noteId);
-      await removeTrashedNoteFromFirestore(noteId);
-      await saveState();
-      renderTrash();
-    }
-
+    // Renderiza la papelera (estado papelera) con restaurar y eliminar definitivo.
     function renderTrash(){
-      const grid = qs('#trashGrid');
-      if(!grid) return;
-      grid.innerHTML = '';
-      const trashed = state.trash
-        .filter(note=>note.deleted || note.estado === 'papelera')
-        .sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
-      if(trashed.length === 0){
+      trashGrid.innerHTML = '';
+      const trashNotes = notes
+        .filter((note) => note.estado === 'papelera')
+        .sort((a,b) => toMillis(b.updatedAt) - toMillis(a.updatedAt));
+
+      if(trashNotes.length === 0){
         const empty = document.createElement('div');
         empty.className = 'note-card';
         empty.textContent = 'No hay notas en papelera.';
-        grid.appendChild(empty);
+        trashGrid.appendChild(empty);
         return;
       }
-      trashed.forEach(n=>{
+
+      for(const note of trashNotes){
         const card = document.createElement('div');
         card.className = 'note-card';
-        const title = document.createElement('div'); title.className='note-title'; title.textContent=truncate(n.title || 'Sin título', 60);
-        const body = document.createElement('div'); body.className='note-body preview'; body.textContent = truncate(stripHtml(n.content), 250);
-        const meta = document.createElement('div');
-        meta.className='note-meta';
-        meta.textContent = `Eliminada: ${new Date(n.deletedAt || n.updated || Date.now()).toLocaleString(getLocaleTag())}`;
+        card.innerHTML = `
+          <div class="note-title">${note.titulo || 'Sin título'}</div>
+          <div class="note-body preview">${stripHtml(note.contenido)}</div>
+          <div class="note-meta">En papelera: ${new Date(toMillis(note.updatedAt)).toLocaleString()}</div>
+        `;
+
         const actions = document.createElement('div');
         actions.style.display = 'flex';
         actions.style.gap = '8px';
         actions.style.marginTop = '10px';
+
         const restoreBtn = document.createElement('button');
         restoreBtn.className = 'btn';
         restoreBtn.textContent = 'Restaurar';
-        restoreBtn.addEventListener('click', ()=>restoreTrashedNote(n.id));
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'btn';
-        deleteBtn.style.background = '#f88';
-        deleteBtn.style.color = '#fff';
-        deleteBtn.textContent = 'Eliminar permanente';
-        deleteBtn.addEventListener('click', ()=>{
-          if(confirm('Esta acción no se puede deshacer. ¿Eliminar permanentemente?')){
-            permanentlyDeleteTrashedNote(n.id);
-          }
+        restoreBtn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          await updateDoc(doc(db, 'notas', note.id), { estado: 'activa', updatedAt: serverTimestamp() });
+          showToast('Nota restaurada');
         });
-        actions.appendChild(restoreBtn);
-        actions.appendChild(deleteBtn);
-        card.appendChild(title);
-        card.appendChild(body);
-        card.appendChild(meta);
+
+        const deleteForeverBtn = document.createElement('button');
+        deleteForeverBtn.className = 'btn';
+        deleteForeverBtn.style.background = '#f88';
+        deleteForeverBtn.style.color = '#fff';
+        deleteForeverBtn.textContent = 'Eliminar definitivamente';
+        deleteForeverBtn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          if(!confirm('Esta acción eliminará la nota permanentemente. ¿Continuar?')) return;
+          await deleteDoc(doc(db, 'notas', note.id));
+          showToast('Nota eliminada definitivamente');
+        });
+
+        actions.append(restoreBtn, deleteForeverBtn);
         card.appendChild(actions);
-        grid.appendChild(card);
+        trashGrid.appendChild(card);
+      }
+    }
+
+    // Dibuja ambas vistas sin eliminar notas antes de confirmar Firestore.
+    function renderAll(){
+      renderRecentNotes();
+      renderTrash();
+    }
+
+    // Escucha tiempo real de notas del usuario.
+    function subscribeToUserNotes(){
+      if(notesUnsubscribe) notesUnsubscribe();
+      const notesQuery = query(
+        collection(db, 'notas'),
+        where('userId', '==', currentUser.uid),
+        orderBy('updatedAt', 'desc')
+      );
+      notesUnsubscribe = onSnapshot(notesQuery, (snapshot) => {
+        notes = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+        renderAll();
+      }, (error) => {
+        console.error('Error al leer notas:', error);
+        showToast('No se pudieron sincronizar las notas');
       });
     }
 
-    function resetHeaderStates(){
-      setActiveNotebookCard(null);
-      closeBookMode();
-      qsa('.nav-links a').forEach(link=>{
-        link.classList.toggle('active-view', link.dataset.view === currentView);
-      });
+    // Abre modal editor; nota nueva no se guarda hasta pulsar Guardar.
+    function openEditor(noteId = null){
+      editingNoteId = noteId;
+      const note = notes.find((item) => item.id === noteId);
+      noteTitleInput.value = note?.titulo || '';
+      editor.innerHTML = note?.contenido || '';
+      deleteNoteBtn.style.display = note ? 'inline-flex' : 'none';
+      deleteNoteBtn.textContent = 'Mover a papelera';
+      overlayEditor.style.display = 'flex';
+      saveIndicator.textContent = note ? 'Editando nota guardada. Pulsa Guardar para persistir cambios.' : 'Nota nueva sin guardar.';
+      saveIndicator.classList.add('visible');
     }
 
-    // --- Views ---
-    let currentView = 'notes';
+    // Cierra modal editor sin forzar guardado automático.
+    function closeEditor(){
+      overlayEditor.style.display = 'none';
+      emojiPanel.style.display = 'none';
+    }
+
+    // Guardado manual: crea/actualiza documento en colección "notas".
+    async function saveCurrentNote(){
+      if(!currentUser) return;
+
+      const titulo = noteTitleInput.value.trim();
+      const contenido = editor.innerHTML;
+      const noteId = editingNoteId || crypto.randomUUID();
+
+      saveButton.disabled = true;
+      saveButton.classList.add('saving');
+      saveButton.textContent = 'Guardando...';
+
+      try{
+        await setDoc(doc(db, 'notas', noteId), {
+          titulo,
+          contenido,
+          userId: currentUser.uid,
+          estado: 'activa',
+          createdAt: editingNoteId ? (notes.find((n) => n.id === noteId)?.createdAt || serverTimestamp()) : serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+
+        editingNoteId = noteId;
+        saveIndicator.textContent = 'Guardado correctamente';
+        showToast('Guardado correctamente');
+      }catch(error){
+        console.error('Error al guardar la nota:', error);
+        showToast('No se pudo guardar la nota');
+      }finally{
+        saveButton.disabled = false;
+        saveButton.classList.remove('saving');
+        saveButton.textContent = 'Guardar';
+      }
+    }
+
+    // Mueve nota existente a papelera con confirmación.
+    async function moveCurrentNoteToTrash(){
+      if(!editingNoteId) return;
+      if(!confirm('¿Mover esta nota a papelera?')) return;
+
+      await updateDoc(doc(db, 'notas', editingNoteId), {
+        estado: 'papelera',
+        updatedAt: serverTimestamp()
+      });
+
+      showToast('Nota movida a papelera');
+      closeEditor();
+    }
+
+    // Navegación de vistas principales.
     function showView(view){
       currentView = view;
-      qs('#view-notes').style.display=view==='notes'?'block':'none';
-      qs('#view-cuadernos').style.display=view==='cuadernos'?'block':'none';
-      qs('#view-notebook-notes').style.display='none';
-      qs('#view-papelera').style.display=view==='papelera'?'block':'none';
-      if(view !== 'cuadernos') activeNotebookId = null;
+      qs('#view-notes').style.display = view === 'notes' ? 'block' : 'none';
+      qs('#view-cuadernos').style.display = view === 'cuadernos' ? 'block' : 'none';
+      qs('#view-notebook-notes').style.display = 'none';
+      qs('#view-papelera').style.display = view === 'papelera' ? 'block' : 'none';
+      qsa('.nav-links a').forEach((link) => link.classList.toggle('active-view', link.dataset.view === view));
       if(view === 'papelera') renderTrash();
-      resetHeaderStates();
-    }
-    qsa('.nav-links a').forEach(a=>a.addEventListener('click', e=>{ e.preventDefault(); showView(a.dataset.view); }));
-
-    // --- FAB and quick add binding ---
-    qs('#fab').addEventListener('click', ()=>openEditor());
-    qs('#openQuickAdd').addEventListener('click', ()=>openEditor());
-
-    // --- Export / Import ---
-    qs('#exportBtn').addEventListener('click', ()=>{ const dataStr = JSON.stringify(state,null,2); const blob = new Blob([dataStr], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download='digital_notes.json'; a.click(); URL.revokeObjectURL(url); });
-    qs('#importFile').addEventListener('change', e=>{ const f = e.target.files[0]; if(!f)return; const reader = new FileReader(); reader.onload = async function(ev){ try{ state = normalizeState(JSON.parse(ev.target.result)); await saveState(); renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); }catch(err){ alert('Archivo inválido'); } finally { e.target.value=''; } }; reader.readAsText(f); });
-
-    // --- Color panel behavior ---
-    qs('#openColorPanel').addEventListener('click', ()=>{ qs('#colorPanel').style.display = qs('#colorPanel').style.display === 'none' ? 'block' : 'none'; });
-    const updateColorPreview = ()=> {
-      const h = qs('#hRange').value, s = qs('#sRange').value, l = qs('#lRange').value, a = qs('#aRange').value;
-      qs('#colorPreview').style.background = `hsla(${h}, ${s}%, ${l}%, ${a})`;
-    };
-    ['hRange','sRange','lRange','aRange'].forEach(id=>qs('#'+id).addEventListener('input', updateColorPreview));
-    updateColorPreview();
-
-    qs('#applyBgColor').addEventListener('click', ()=>{
-      const bg = qs('#colorPreview').style.background;
-      editorVisualState.backgroundColor = bg;
-      qs('#editor').style.background = bg;
-      onUserChange();
-    });
-
-    qs('#textColorTool').addEventListener('click', ()=>{
-      qs('#textColorToolPicker').click();
-    });
-    qs('#textColorToolPicker').addEventListener('input', (e)=>{
-      const color = e.target.value;
-      document.execCommand('foreColor', false, color);
-      editorVisualState.textColor = color;
-      qs('#editor').style.color = color;
-      qs('#editor').focus();
-      onUserChange();
-    });
-
-    // Quick palette generation
-    const quickColors = ['#fff5fb','#ffd9ec','#f8d6ff','#ffe7f2','#fddaf0','#ffe0d2','#f0dbff','#e8d9ff','#f8cfe5','#ffd6e8'];
-    function renderQuickPalette(){
-      const container = qs('#quickPalette'); container.innerHTML='';
-      quickColors.forEach(c=>{
-        const btn = document.createElement('button'); btn.style.background=c;
-        btn.addEventListener('click', ()=>{ qs('#editor').style.background=c; editorVisualState.backgroundColor=c; onUserChange(); });
-        container.appendChild(btn);
-      });
-    }
-    renderQuickPalette();
-
-    // --- Insert image into editor ---
-    qs('#insertImageBtn').addEventListener('click', ()=> qs('#noteImageFile').click());
-    qs('#noteImageFile').addEventListener('change', async (e)=>{
-      const f = e.target.files[0]; if(!f) return;
-      const dataUrl = await fileToDataUrl(f);
-      // insert at caret position in contenteditable
-      insertHtmlAtCursor(`<img src="${dataUrl}" class="note-img" style="width:70%;display:block;margin:8px 0;position:relative;left:0px;top:0px;" />`);
-      onUserChange();
-      e.target.value = '';
-    });
-
-    function insertHtmlAtCursor(html) {
-      const editor = qs('#editor');
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount) {
-        editor.insertAdjacentHTML('beforeend', html);
-        return;
-      }
-      const range = sel.getRangeAt(0);
-      if(!editor.contains(range.commonAncestorContainer)){
-        editor.insertAdjacentHTML('beforeend', html);
-        return;
-      }
-      range.deleteContents();
-      const el = document.createElement('div');
-      el.innerHTML = html;
-      const frag = document.createDocumentFragment();
-      let node, lastNode;
-      while ((node = el.firstChild)) {
-        lastNode = frag.appendChild(node);
-      }
-      range.insertNode(frag);
-      // move cursor after inserted node
-      if (lastNode) {
-        range.setStartAfter(lastNode);
-        range.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
     }
 
-    function animateTap(el){
-      if(!el) return;
-      el.classList.remove('tap-anim');
-      void el.offsetWidth;
-      el.classList.add('tap-anim');
-    }
-
-    function changeSelectionFontSize(step){
-      const size = step > 0 ? 5 : 2;
-      document.execCommand('fontSize', false, size);
-      const computedSize = window.getComputedStyle(qs('#editor')).fontSize;
-      editorVisualState.fontSize = computedSize || null;
-      qs('#editor').focus();
-      onUserChange();
-    }
-
-    qs('#fontIncrease').addEventListener('click', ()=>changeSelectionFontSize(1));
-    qs('#fontDecrease').addEventListener('click', ()=>changeSelectionFontSize(-1));
-
-    const compactBgColors = ['#fff8fc','#ffeef8','#ffe4f3','#ffdaf0','#f8ecff','#efe2ff','#e6f0ff','#e7fff7','#fdf7e3','#ffffff'];
-    function renderCompactPalette(){
-      const wrap = qs('#compactColorGrid');
-      if(!wrap) return;
-      wrap.innerHTML = '';
-      compactBgColors.forEach(color=>{
-        const sw = document.createElement('button');
-        sw.type = 'button';
-        sw.style.background = color;
-        sw.title = color;
-        sw.addEventListener('click', ()=>{
-          qs('#editor').style.background = color;
-          editorVisualState.backgroundColor = color;
-          onUserChange();
-        });
-        wrap.appendChild(sw);
-      });
-    }
-    qs('#toggleCompactPalette').addEventListener('click', ()=>{
-      const panel = qs('#compactColorPalette');
-      panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
-      qs('#colorPanel').style.display = 'none';
-    });
-
-    const drawingBoard = qs('#drawingBoard');
-    const templatePanel = qs('#templatePanel');
-    const templateGalleryEditor = qs('#templateGalleryEditor');
-    function setTemplateSession(isOpen){
-      templatePanel.style.display = isOpen ? 'block' : 'none';
-      templateGalleryEditor.style.display = isOpen ? 'block' : 'none';
-      qs('#insertTemplateBtn').setAttribute('aria-pressed', String(isOpen));
-    }
-    qs('#insertTemplateBtn').addEventListener('click', ()=>{
-      const open = templatePanel.style.display !== 'block';
-      setTemplateSession(open);
-      drawingBoard.style.display = 'none';
-    });
-
-    function insertAssetBlock({src, label, width='95%', template=false}){
-      qs('#editor').focus();
-      const safeLabel = label || 'Elemento';
-      insertHtmlAtCursor(`
-        <figure class="note-asset-block">
-          <figcaption>${safeLabel}</figcaption>
-          <img src="${src}" class="note-img${template ? " template-inline" : ""}" style="width:${width};display:block;margin:0 auto;position:relative;left:0;top:0;" alt="${safeLabel}" />
-        </figure>
-        <p><br></p>
-      `);
-      onUserChange();
-    }
-
-    qsa('.template-btn').forEach(btn=>{
-      btn.addEventListener('click', async ()=>{
-        const src = btn.dataset.template;
-        insertAssetBlock({ src, label:'Plantilla en la nota', width:'46%' , template:true });
-        setTemplateSession(false);
-      });
-    });
-
-    const drawCanvas = qs('#drawCanvas');
-    const drawCtx = drawCanvas.getContext('2d');
-    let isDrawing = false;
-    let eraserOn = false;
-    function drawPoint(e){
-      const rect = drawCanvas.getBoundingClientRect();
-      const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-      const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
-      return {x, y};
-    }
-    function setBrush(){
-      const brush = qs('#drawBrush').value;
-      const size = Number(qs('#drawSize').value);
-      drawCtx.lineWidth = brush === 'marker' ? size * 2 : size;
-      drawCtx.lineCap = brush === 'square' ? 'butt' : 'round';
-      drawCtx.globalAlpha = brush === 'marker' ? 0.45 : 1;
-      drawCtx.strokeStyle = eraserOn ? '#ffffff' : qs('#drawColor').value;
-    }
-    function startDraw(e){
-      isDrawing = true;
-      setBrush();
-      const p = drawPoint(e);
-      drawCtx.beginPath();
-      drawCtx.moveTo(p.x, p.y);
-      e.preventDefault();
-    }
-    function moveDraw(e){
-      if(!isDrawing) return;
-      const p = drawPoint(e);
-      drawCtx.lineTo(p.x, p.y);
-      drawCtx.stroke();
-      e.preventDefault();
-    }
-    function endDraw(){ isDrawing = false; drawCtx.closePath(); }
-    drawCtx.fillStyle = '#ffffff';
-    drawCtx.fillRect(0,0,drawCanvas.width,drawCanvas.height);
-    drawCanvas.addEventListener('mousedown', startDraw);
-    drawCanvas.addEventListener('mousemove', moveDraw);
-    window.addEventListener('mouseup', endDraw);
-    drawCanvas.addEventListener('touchstart', startDraw, {passive:false});
-    drawCanvas.addEventListener('touchmove', moveDraw, {passive:false});
-    drawCanvas.addEventListener('touchend', endDraw);
-
-    qs('#drawEraser').addEventListener('click', ()=>{ eraserOn = !eraserOn; });
-    qs('#clearDrawCanvas').addEventListener('click', ()=>{
-      drawCtx.clearRect(0,0,drawCanvas.width,drawCanvas.height);
-      drawCtx.fillStyle = '#ffffff';
-      drawCtx.fillRect(0,0,drawCanvas.width,drawCanvas.height);
-    });
-    qs('#saveDrawingBtn').addEventListener('click', ()=>{
-      const dataUrl = drawCanvas.toDataURL('image/png');
-      insertAssetBlock({ src:dataUrl, label:'Dibujo en la nota', width:'90%' });
-    });
-
-    const drawFullscreenOverlay = qs('#drawFullscreenOverlay');
-    const drawFsCanvas = qs('#drawFullscreenCanvas');
-    const drawFsCtx = drawFsCanvas.getContext('2d');
-    let drawFsActive = false;
-    let drawFsEraser = false;
-
-    function drawFsPoint(evt){
-      const rect = drawFsCanvas.getBoundingClientRect();
-      const point = evt.touches ? evt.touches[0] : evt;
-      const scaleX = drawFsCanvas.width / rect.width;
-      const scaleY = drawFsCanvas.height / rect.height;
-      return { x:(point.clientX - rect.left) * scaleX, y:(point.clientY - rect.top) * scaleY };
-    }
-
-    function setFsBrush(){
-      const brush = qs('#drawFsBrush').value;
-      const size = Number(qs('#drawFsSize').value);
-      drawFsCtx.lineWidth = brush === 'marker' ? size * 2 : size;
-      drawFsCtx.lineCap = brush === 'square' ? 'butt' : 'round';
-      drawFsCtx.globalAlpha = brush === 'marker' ? 0.4 : 1;
-      drawFsCtx.strokeStyle = drawFsEraser ? '#ffffff' : qs('#drawFsColor').value;
-    }
-
-    function resizeFsCanvas(){
-      const old = drawFsCanvas.toDataURL('image/png');
-      const ratio = window.devicePixelRatio || 1;
-      const rect = drawFsCanvas.getBoundingClientRect();
-      drawFsCanvas.width = Math.max(800, Math.floor(rect.width * ratio));
-      drawFsCanvas.height = Math.max(460, Math.floor(rect.height * ratio));
-      const temp = new Image();
-      temp.onload = ()=> drawFsCtx.drawImage(temp, 0, 0, drawFsCanvas.width, drawFsCanvas.height);
-      temp.src = old;
-    }
-
-    function openFullscreenDraw(){
-      drawFullscreenOverlay.style.display = 'flex';
-      setTimeout(resizeFsCanvas, 40);
-    }
-
-    function closeFullscreenDraw(){
-      drawFullscreenOverlay.style.display = 'none';
-      drawFsActive = false;
-    }
-
-    function fsStart(e){
-      drawFsActive = true;
-      setFsBrush();
-      const p = drawFsPoint(e);
-      drawFsCtx.beginPath();
-      drawFsCtx.moveTo(p.x,p.y);
-      e.preventDefault();
-    }
-    function fsMove(e){
-      if(!drawFsActive) return;
-      const p = drawFsPoint(e);
-      drawFsCtx.lineTo(p.x,p.y);
-      drawFsCtx.stroke();
-      e.preventDefault();
-    }
-    function fsEnd(){ drawFsActive = false; drawFsCtx.closePath(); }
-
-    drawFsCtx.fillStyle = '#ffffff';
-    drawFsCtx.fillRect(0,0,drawFsCanvas.width,drawFsCanvas.height);
-    drawFsCanvas.addEventListener('mousedown', fsStart);
-    drawFsCanvas.addEventListener('mousemove', fsMove);
-    window.addEventListener('mouseup', fsEnd);
-    drawFsCanvas.addEventListener('touchstart', fsStart, {passive:false});
-    drawFsCanvas.addEventListener('touchmove', fsMove, {passive:false});
-    drawFsCanvas.addEventListener('touchend', fsEnd);
-
-    qs('#openFullscreenDraw').addEventListener('click', openFullscreenDraw);
-    qs('#closeFullscreenDraw').addEventListener('click', closeFullscreenDraw);
-    qs('#drawFsEraser').addEventListener('click', ()=>{ drawFsEraser = !drawFsEraser; });
-    qs('#drawFsClear').addEventListener('click', ()=>{
-      drawFsCtx.clearRect(0,0,drawFsCanvas.width,drawFsCanvas.height);
-      drawFsCtx.fillStyle = '#ffffff';
-      drawFsCtx.fillRect(0,0,drawFsCanvas.width,drawFsCanvas.height);
-    });
-    qs('#drawFsSave').addEventListener('click', ()=>{
-      const dataUrl = drawFsCanvas.toDataURL('image/png');
-      insertAssetBlock({ src:dataUrl, label:'Dibujo en pantalla completa', width:'95%' });
-      closeFullscreenDraw();
-    });
-
-    function attachCanvasDrawing(canvasEl, options){
-      const ctx = canvasEl.getContext('2d');
-      let drawing = false;
-      let eraser = false;
-      const getPoint = evt=>{
-        const rect = canvasEl.getBoundingClientRect();
-        const point = evt.touches ? evt.touches[0] : evt;
-        const scaleX = canvasEl.width / rect.width;
-        const scaleY = canvasEl.height / rect.height;
-        return {x:(point.clientX - rect.left) * scaleX, y:(point.clientY - rect.top) * scaleY};
-      };
-      const setBrush = ()=>{
-        const brush = qs(options.brush).value;
-        const size = Number(qs(options.size).value);
-        ctx.lineWidth = brush === 'marker' ? size * 2 : size;
-        ctx.lineCap = brush === 'square' ? 'butt' : 'round';
-        ctx.globalAlpha = brush === 'marker' ? 0.45 : 1;
-        ctx.strokeStyle = eraser ? 'rgba(0,0,0,0)' : qs(options.color).value;
-        ctx.globalCompositeOperation = eraser ? 'destination-out' : 'source-over';
-      };
-      const start = e=>{ drawing=true; setBrush(); const p=getPoint(e); ctx.beginPath(); ctx.moveTo(p.x,p.y); e.preventDefault(); };
-      const move = e=>{ if(!drawing) return; const p=getPoint(e); ctx.lineTo(p.x,p.y); ctx.stroke(); e.preventDefault(); };
-      const end = ()=>{ drawing=false; ctx.closePath(); };
-      canvasEl.addEventListener('mousedown', start);
-      canvasEl.addEventListener('mousemove', move);
-      canvasEl.addEventListener('touchstart', start, {passive:false});
-      canvasEl.addEventListener('touchmove', move, {passive:false});
-      canvasEl.addEventListener('touchend', end);
-      window.addEventListener('mouseup', end);
-      qs(options.eraser).addEventListener('click', ()=>{ eraser = !eraser; });
-      qs(options.clear).addEventListener('click', ()=>ctx.clearRect(0,0,canvasEl.width,canvasEl.height));
-      return { ctx, clear:()=>ctx.clearRect(0,0,canvasEl.width,canvasEl.height) };
-    }
-
-    const templateCanvas = qs('#templateDrawCanvas');
-    const templateBgImage = qs('#templateBgImage');
-    const overlayTemplateEditor = qs('#overlayTemplateEditor');
-    let templatePad = null;
-
-    function ensureTemplatePad(){
-      if(templatePad) return templatePad;
-      templatePad = attachCanvasDrawing(templateCanvas, {
-        color:'#templateDrawColor',
-        size:'#templateDrawSize',
-        brush:'#templateDrawBrush',
-        eraser:'#templateEraserBtn',
-        clear:'#templateClearBtn'
-      });
-      return templatePad;
-    }
-
-    function fitTemplateCanvas(){
-      const wrap = templateCanvas.parentElement.getBoundingClientRect();
-      const ratio = window.devicePixelRatio || 1;
-      templateCanvas.width = Math.floor(wrap.width * ratio);
-      templateCanvas.height = Math.floor(wrap.height * ratio);
-    }
-
-    function openTemplateEditor(template){
-      qs('#templateEditorTitle').textContent = `Editor: ${template.name}`;
-      templateBgImage.src = template.src;
-      overlayTemplateEditor.style.display = 'flex';
-      fitTemplateCanvas();
-      ensureTemplatePad().clear();
-    }
-
-    qs('#templateSaveBtn').addEventListener('click', async ()=>{
-      const selectedTemplate = templateBgImage.getAttribute('src');
-      if(!selectedTemplate) return;
-      const composedCanvas = document.createElement('canvas');
-      composedCanvas.width = templateCanvas.width;
-      composedCanvas.height = templateCanvas.height;
-      const composedCtx = composedCanvas.getContext('2d');
-      const baseImage = new Image();
-
-      try {
-        await new Promise((resolve, reject)=>{
-          baseImage.onload = resolve;
-          baseImage.onerror = reject;
-          baseImage.src = selectedTemplate;
-        });
-        composedCtx.drawImage(baseImage, 0, 0, composedCanvas.width, composedCanvas.height);
-        composedCtx.drawImage(templateCanvas, 0, 0, composedCanvas.width, composedCanvas.height);
-        const dataUrl = composedCanvas.toDataURL('image/png');
-        insertAssetBlock({ src:dataUrl, label:'Plantilla en la nota', width:'46%' , template:true });
-        await saveCurrentNote({shouldClose:false, throwOnError:true});
-        overlayTemplateEditor.style.display = 'none';
-      } catch(error){
-        console.error('No se pudo guardar la plantilla en la nota:', error);
-      }
-    });
-
-    qs('#templateCloseBtn').addEventListener('click', ()=>overlayTemplateEditor.style.display='none');
-    window.addEventListener('resize', ()=>{
-      if(drawFullscreenOverlay.style.display === 'flex') resizeFsCanvas();
-      if(overlayTemplateEditor.style.display === 'flex') fitTemplateCanvas();
-    });
-
-    // --- Rich text tools ---
-    qsa('.toolbar [data-cmd]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        qs('#editor').focus();
-        document.execCommand(btn.dataset.cmd, false, null);
-        qs('#editor').focus();
-        onUserChange();
-      });
-    });
-
-    qsa('.toolbar [data-align]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const align = btn.dataset.align;
-        const cmd = align === 'left' ? 'justifyLeft' : align === 'center' ? 'justifyCenter' : 'justifyRight';
-        qs('#editor').focus();
-        document.execCommand(cmd, false, null);
-        qs('#editor').focus();
-        onUserChange();
-      });
-    });
-
-    function applyEditorFont(fontName=''){
-      qs('#editor').style.fontFamily = fontName || '';
-    }
-
-    function updateActiveFontUI(){
-      const select = qs('#fontSelect');
-      const label = qs('#activeFontLabel');
-      select.classList.toggle('active-select', Boolean(currentFontFamily));
-      if(currentFontFamily){
-        select.value = currentFontFamily;
-        label.textContent = `Fuente activa: ${currentFontFamily}`;
-      } else {
-        select.value = '';
-        label.textContent = 'Fuente activa: Predeterminada';
-      }
-    }
-
-    qs('#fontSelect').addEventListener('change', (e)=>{
-      currentFontFamily = e.target.value || '';
-      editorVisualState.fontFamily = currentFontFamily || null;
-      if(currentFontFamily){
-        document.execCommand('fontName', false, currentFontFamily);
-      }
-      applyEditorFont(currentFontFamily);
-      updateActiveFontUI();
-      qs('#editor').focus();
-      onUserChange();
-    });
-
-    qs('#emojiBtn').addEventListener('click', ()=>{
-      const value = prompt('Escribe o pega un emoji para insertarlo:');
-      if(!value) return;
-      insertHtmlAtCursor(`${value} `);
-      onUserChange();
-    });
-
-    qs('#applyHighlight').addEventListener('click', ()=>{
-      const color = qs('#highlightColor').value;
-      document.execCommand('hiliteColor', false, color);
-      qs('#editor').focus();
-      onUserChange();
-    });
-
-    qs('#insertChecklist').addEventListener('click', ()=>{
-      insertHtmlAtCursor(`<div><label><input type="checkbox" /> Tarea</label></div>`);
-      onUserChange();
-    });
-
-    // --- Image controls ---
-    const imageControls = qs('#imageControls');
-    const imageSize = qs('#imageSize');
-    const imageRotate = qs('#imageRotate');
-    const imageAlign = qs('#imageAlign');
-    const pinImageBtn = qs('#pinImageBtn');
-
-    qs('#editor').addEventListener('click', (e)=>{
-      const target = e.target;
-      if(target && target.tagName === 'IMG' && target.classList.contains('template-inline')){
-        e.preventDefault();
-        e.stopPropagation();
-        openTemplatePreview(target.src);
-        return;
-      }
-      if(target && target.tagName === 'IMG'){
-        qsa('#editor img').forEach(img=>img.classList.remove('selected'));
-        target.classList.add('selected');
-        currentImage = target;
-        imageControls.style.display = 'flex';
-        const width = parseInt(target.style.width || '70', 10);
-        imageSize.value = Number.isNaN(width) ? 70 : width;
-        const rotateMatch = target.style.transform.match(/rotate\(([-\d.]+)deg\)/);
-        imageRotate.value = rotateMatch ? rotateMatch[1] : 0;
-        const alignValue = target.dataset.align || 'left';
-        imageAlign.value = alignValue;
-        pinImageBtn.textContent = target.dataset.pinned === 'true' ? 'Desfijar imagen' : 'Fijar imagen';
-      } else {
-        qsa('#editor img').forEach(img=>img.classList.remove('selected'));
-        currentImage = null;
-        imageControls.style.display = 'none';
-        pinImageBtn.textContent = 'Fijar imagen';
-      }
-    });
-
-    let dragImageState = null;
-    qs('#editor').addEventListener('pointerdown', (e)=>{
-      const target = e.target;
-      if(!(target && target.tagName === 'IMG')) return;
-      if(target.dataset.pinned === 'true') return;
-      dragImageState = {el: target, startX: e.clientX, startY: e.clientY, left: parseFloat(target.style.left || 0), top: parseFloat(target.style.top || 0)};
-      target.setPointerCapture(e.pointerId);
-    });
-
-    qs('#editor').addEventListener('pointermove', (e)=>{
-      if(!dragImageState) return;
-      const dx = e.clientX - dragImageState.startX;
-      const dy = e.clientY - dragImageState.startY;
-      dragImageState.el.style.left = `${dragImageState.left + dx}px`;
-      dragImageState.el.style.top = `${dragImageState.top + dy}px`;
-    });
-
-    qs('#editor').addEventListener('pointerup', ()=>{
-      if(!dragImageState) return;
-      dragImageState = null;
-    });
-
-    qs('#editor').addEventListener('change', (e)=>{
-      const target = e.target;
-      if(target && target.matches('input[type="checkbox"]')){
-        if(target.checked){
-          target.setAttribute('checked', 'checked');
-        } else {
-          target.removeAttribute('checked');
-        }
-        }
-    });
-
-    qs('#editor').addEventListener('click', (e)=>{
-      const target = e.target;
-      if(target && target.matches('input[type="checkbox"]')){
-        if(target.checked){
-          target.setAttribute('checked', 'checked');
-        } else {
-          target.removeAttribute('checked');
-        }
-        }
-    });
-
-    function applyImageAlign(value){
-      if(!currentImage) return;
-      currentImage.dataset.align = value;
-      currentImage.style.display = 'block';
-      currentImage.style.marginLeft = value === 'right' ? 'auto' : '0';
-      currentImage.style.marginRight = value === 'left' ? 'auto' : '0';
-      if(value === 'center'){
-        currentImage.style.marginLeft = 'auto';
-        currentImage.style.marginRight = 'auto';
-      }
-    }
-
-    imageSize.addEventListener('input', ()=>{
-      if(!currentImage) return;
-      currentImage.style.width = `${imageSize.value}%`;
-    });
-
-    imageRotate.addEventListener('input', ()=>{
-      if(!currentImage) return;
-      currentImage.style.transform = `rotate(${imageRotate.value}deg)`;
-    });
-
-    imageAlign.addEventListener('change', ()=>{
-      if(!currentImage) return;
-      applyImageAlign(imageAlign.value);
-    });
-
-
-    pinImageBtn.addEventListener('click', ()=>{
-      if(!currentImage) return;
-      const pinned = currentImage.dataset.pinned === 'true';
-      currentImage.dataset.pinned = pinned ? 'false' : 'true';
-      pinImageBtn.textContent = pinned ? 'Fijar imagen' : 'Desfijar imagen';
-    });
-
-    qs('#removeImageBtn').addEventListener('click', ()=>{
-      if(!currentImage) return;
-      currentImage.remove();
-      currentImage = null;
-      imageControls.style.display = 'none';
-    });
-
-
-    function updateFullscreenEditorVisibility(){
-      const isDesktopOrTablet = window.matchMedia('(min-width: 601px)').matches;
-      const btn = qs('#fullscreenEditorBtn');
-      btn.style.display = isDesktopOrTablet ? 'inline-flex' : 'none';
-      if(!isDesktopOrTablet){
-        qs('#editorModal').classList.remove('fullscreen');
-        btn.textContent = '⛶ Pantalla completa';
-      }
-    }
-
-    qs('#fullscreenEditorBtn').addEventListener('click', ()=>{
-      const modal = qs('#editorModal');
-      modal.classList.toggle('fullscreen');
-      qs('#fullscreenEditorBtn').textContent = modal.classList.contains('fullscreen') ? '🗗 Salir de pantalla completa' : '⛶ Pantalla completa';
-    });
-
-    updateFullscreenEditorVisibility();
-    window.addEventListener('resize', updateFullscreenEditorVisibility);
-
-    function openTemplatePreview(src){
-      if(!src) return;
-      qs('#templatePreviewImage').src = src;
-      qs('#overlayTemplatePreview').style.display = 'flex';
-    }
-
-    qs('#templatePreviewClose').addEventListener('click', ()=>qs('#overlayTemplatePreview').style.display='none');
-    qs('#templatePreviewEdit').addEventListener('click', ()=>{
-      qs('#overlayTemplatePreview').style.display='none';
-      const imgSrc = qs('#templatePreviewImage').src;
-      const found = TEMPLATE_ITEMS.find(t=>imgSrc.includes(t.src));
-      openTemplateEditor(found || {name:'Plantilla', src:imgSrc});
-    });
-
-    qs('#openSettingsBtn').addEventListener('click', ()=>{
-      updateSettingsPanel();
-      qs('#overlaySettings').style.display = 'flex';
-    });
-    qs('#closeSettingsBtn').addEventListener('click', ()=>qs('#overlaySettings').style.display='none');
-    qs('#logoutBtn').addEventListener('click', async ()=>{
-      qs('#overlaySettings').style.display='none';
-      try {
-        const auth = getFirebaseAuthInstance();
-        await signOut(auth);
-        await clearSession({ silent:true });
-      } catch(error){
-        console.error('Error al cerrar sesión en Firebase Auth:', error);
-        showToast('No se pudo cerrar la sesión. Intenta nuevamente.');
-      }
-    });
-
-    // --- Utility: close overlays when clicking outside modal content ---
-    document.querySelectorAll('.overlay').forEach(ov=>{
-      ov.addEventListener('click', e=>{
-        if(e.target === ov){ if(ov.id === 'overlayEditor'){ closeEditor(); } else { ov.style.display='none'; editingNote=null; } }
-      });
-    });
-
-
-    async function requestMultimediaAccess(){
-      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-        alert('Tu navegador no soporta solicitud de multimedia.');
-        return;
-      }
-      const wants = confirm('¿Quieres permitir acceso solo a fotos/cámara para enriquecer tus notas?');
-      if(!wants) return;
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({video:true,audio:false});
-        stream.getTracks().forEach(track=>track.stop());
-        alert('Acceso a fotos/cámara habilitado.');
-      } catch (err) {
-        alert('No se pudo activar el acceso multimedia. Puedes intentarlo luego desde tu navegador.');
-      }
-    }
-
-    async function maybeShowOnboarding(){
-      if(localStorage.getItem(ONBOARDING_KEY)) return;
-      qs('#overlayTutorial').style.display='flex';
-      await requestMultimediaAccess();
-    }
-
-    // --- Init ---
-    async function init(){
-      await bootstrapAuth();
+    // Flujo seguro y completo de eliminar cuenta + todas las notas.
+    async function handleDeleteAccount(){
       if(!currentUser) return;
-      loadState();
-      console.info(`Firebase project conectado: ${FIREBASE_CONFIG.projectId}`);
-      renderNotebooks();
-      renderNotes();
-      renderTemplateGallery();
-      renderTrash();
-      showView('notes');
-      populateEditorNotebook();
-      renderCompactPalette();
-      maybeShowOnboarding();
+      const accepted = confirm('¿Estás seguro? Esta acción eliminará tu cuenta y todas tus notas permanentemente.');
+      if(!accepted) return;
 
-      qsa('button, .btn, .toolbar button, .icon-btn').forEach(el=>{
-        el.addEventListener('click', ()=>animateTap(el));
-      });
+      const button = qs('#deleteAccountBtn');
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Eliminando cuenta...';
+
+      try{
+        // 1) Elimina todas las notas del usuario en lotes (sin dejar huérfanos).
+        const notesQuery = query(collection(db, 'notas'), where('userId', '==', currentUser.uid));
+        const snapshot = await getDocs(notesQuery);
+        const docs = [...snapshot.docs];
+
+        while(docs.length){
+          const batch = writeBatch(db);
+          docs.splice(0, 450).forEach((docSnap) => batch.delete(docSnap.ref));
+          await batch.commit();
+        }
+
+        // 2) Elimina usuario de Firebase Authentication.
+        await deleteUser(auth.currentUser);
+
+        showToast('Cuenta eliminada correctamente');
+        window.location.replace('login.html');
+      }catch(error){
+        console.error('Error eliminando cuenta:', error);
+        if(error?.code === 'auth/requires-recent-login'){
+          showToast('Por seguridad, debes volver a iniciar sesión para eliminar tu cuenta.');
+        }else{
+          showToast('No se pudo eliminar la cuenta');
+        }
+      }finally{
+        button.disabled = false;
+        button.textContent = originalText;
+      }
     }
-    void init();
 
-    // Expose some functions for console debugging (optional)
-    window._dn = { state, saveState, renderNotes, renderNotebooks };
+    // Eventos principales de interfaz.
+    qs('#fab').addEventListener('click', () => openEditor());
+    qs('#openQuickAdd').addEventListener('click', () => openEditor());
+    qs('#closeEditor').addEventListener('click', closeEditor);
+    qs('#saveNote').addEventListener('click', saveCurrentNote);
+    qs('#deleteNoteBtn').addEventListener('click', moveCurrentNoteToTrash);
+    qs('#searchInput').addEventListener('input', renderRecentNotes);
 
+    // Botón emoji: abre/cierra panel real de emoji picker.
+    qs('#emojiBtn').textContent = '😊';
+    qs('#emojiBtn').addEventListener('click', () => {
+      rememberSelection();
+      emojiPanel.style.display = emojiPanel.style.display === 'none' ? 'block' : 'none';
+    });
+
+    editor.addEventListener('keyup', rememberSelection);
+    editor.addEventListener('mouseup', rememberSelection);
+
+    // Navegación.
+    qsa('.nav-links a').forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        showView(link.dataset.view);
+      });
+    });
+
+    // Configuración: abrir/cerrar, logout y eliminación de cuenta.
+    qs('#openSettingsBtn').addEventListener('click', () => { qs('#overlaySettings').style.display = 'flex'; });
+    qs('#closeSettingsBtn').addEventListener('click', () => { qs('#overlaySettings').style.display = 'none'; });
+    qs('#logoutBtn').addEventListener('click', async () => {
+      await signOut(auth);
+      window.location.replace('login.html');
+    });
+    qs('#deleteAccountBtn').addEventListener('click', handleDeleteAccount);
+
+    // Cierra picker si se toca fuera.
+    document.addEventListener('click', (event) => {
+      const emojiBtn = qs('#emojiBtn');
+      if(!emojiPanel.contains(event.target) && event.target !== emojiBtn){
+        emojiPanel.style.display = 'none';
+      }
+    });
+
+    // Protección de sesión + carga inicial.
+    onAuthStateChanged(auth, (user) => {
+      if(!user){
+        window.location.replace('login.html');
+        return;
+      }
+
+      currentUser = user;
+      qs('#settingsUserName').textContent = `Nombre: ${user.displayName || 'Sin nombre'}`;
+      qs('#settingsUserEmail').textContent = `Email: ${user.email || ''}`;
+      qs('#settingsUserBirth').textContent = 'Nacimiento: gestionado en el registro';
+
+      document.body.classList.remove('auth-locked');
+      subscribeToUserNotes();
+      showView('notes');
+    });
   </script>
 </body>
 </html>
