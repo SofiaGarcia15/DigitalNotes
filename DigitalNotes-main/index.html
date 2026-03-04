@@ -2029,7 +2029,11 @@
     let firebaseFirestoreDb = null;
     let notesDocUnsubscribe = null;
     let isApplyingRemoteState = false;
+    let isStateSaving = false;
+    let currentNoteId = null;
     let isSaving = false;
+    let pendingSave = false;
+    let isAuthReadyForAutosave = false;
     let editorLastSavedSnapshot = '';
     let recentIndicatorTimer = null;
     let hasQueuedSave = false;
@@ -2282,6 +2286,7 @@
       const { silent = false } = options;
       stopNotesSync();
       currentUser = null;
+      isAuthReadyForAutosave = false;
       if(!silent) showToast('Sesión cerrada');
       window.location.replace('login.html');
     }
@@ -2305,11 +2310,13 @@
           const unsubscribe = onAuthStateChanged(auth, async user=>{
             unsubscribe();
             if(!user){
+              isAuthReadyForAutosave = false;
               window.location.replace('login.html');
               resolve();
               return;
             }
             await syncSessionFromFirebaseUser(user, { silent:true });
+            isAuthReadyForAutosave = true;
             resolve();
           }, reject);
         });
@@ -2335,10 +2342,10 @@
     async function runStateSave(){
       while(hasQueuedSave){
         hasQueuedSave = false;
-        isSaving = true;
+        isStateSaving = true;
         await syncStateToFirestore();
       }
-      isSaving = false;
+      isStateSaving = false;
     }
 
     async function saveState({ throwOnError = false } = {}){
@@ -2346,7 +2353,7 @@
       if(!activeSavePromise){
         activeSavePromise = runStateSave().finally(()=>{
           activeSavePromise = null;
-          isSaving = false;
+          isStateSaving = false;
         });
       }
 
@@ -2776,8 +2783,6 @@
     let editingNote=null;
     let currentImage = null;
     let currentFontFamily = '';
-    let noteSaveInFlight = null;
-    let pendingNoteSave = false;
     let autosaveDebounceTimer = null;
     const AUTOSAVE_DEBOUNCE_MS = 1500;
     let editorVisualState = {
@@ -2832,6 +2837,7 @@
 
     function openEditor(note=null){
       editingNote = note;
+      currentNoteId = note?.id || null;
       qs('#overlayEditor').style.display='flex';
       qs('#noteTitle').value = note?.title||'';
       qs('#editor').innerHTML = note?.content||'';
@@ -2873,6 +2879,8 @@
       setRecentSaveIndicator('');
       qs('#overlayEditor').style.display='none';
       editingNote=null;
+      currentNoteId = null;
+      pendingSave = false;
     }
 
     qs('#editor').addEventListener('keydown', (event)=>{
@@ -3016,7 +3024,7 @@
       }
       indicator.textContent = message;
       indicator.classList.add('visible');
-      if(message === 'Guardado' || message === 'Guardado correctamente'){
+      if(message === 'Guardado' || message === 'Guardado ✅'){
         recentIndicatorTimer = setTimeout(()=>{
           indicator.classList.remove('visible');
           indicator.textContent = '';
@@ -3038,6 +3046,9 @@
 
     function onUserChange(){
       if(qs('#overlayEditor').style.display !== 'flex') return;
+      if(!isAuthReadyForAutosave || !currentUser){
+        return;
+      }
       if(buildEditorSnapshot() === editorLastSavedSnapshot){
         clearTimeout(autosaveDebounceTimer);
         setRecentSaveIndicator('');
@@ -3068,27 +3079,25 @@
 
     async function saveCurrentNote({ shouldClose=false, throwOnError=false } = {}){
       clearTimeout(autosaveDebounceTimer);
-      if(noteSaveInFlight){
-        pendingNoteSave = true;
-        await noteSaveInFlight;
-        if(pendingNoteSave){
-          pendingNoteSave = false;
-          return saveCurrentNote({ shouldClose:false, throwOnError });
-        }
+      if(isSaving){
+        pendingSave = true;
         return;
       }
 
       if(buildEditorSnapshot() === editorLastSavedSnapshot){
-        setRecentSaveIndicator('Guardado correctamente');
+        setRecentSaveIndicator('Guardado ✅');
         if(shouldClose){ editingNote=null; closeEditor(); }
         return;
       }
 
-      const run = async ()=>{
+      isSaving = true;
+      try {
         setRecentSaveIndicator('Guardando...');
         const now = Date.now();
-        const isNewNote = !editingNote?.id;
-        const noteId = editingNote?.id || null;
+        const firebaseAuthInstance = getFirebaseAuthInstance();
+        const authenticatedUserId = firebaseAuthInstance.currentUser?.uid || currentUser?.id;
+        const isNewNote = !currentNoteId;
+        const noteId = currentNoteId;
         const createdAt = editingNote?.created || editingNote?.createdAt || now;
         const fullNotePayload = {
           ...buildNotePayloadForSave(noteId, createdAt),
@@ -3106,42 +3115,40 @@
         state.notes = state.notes.filter(note=>note.id!==editingNote.id || note===editingNote);
         state.trash = state.trash.filter(note=>note.id!==editingNote.id);
 
-        if(currentUser){
+        if(authenticatedUserId){
           const firestoreDb = getFirebaseFirestoreDb();
-          const notesCollectionRef = collection(firestoreDb, 'users', currentUser.id, 'notes');
+          const notesCollectionRef = collection(firestoreDb, 'users', authenticatedUserId, 'notes');
+          const { createdAt: _createdAt, ...notePayloadWithoutCreatedAt } = fullNotePayload;
           const firestorePayload = {
-            userId: currentUser.id,
+            userId: authenticatedUserId,
             title: fullNotePayload.title,
             content: fullNotePayload.content,
-            createdAt: fullNotePayload.createdAt,
             updatedAt: now,
             estado: 'activa',
-            ...fullNotePayload,
+            ...notePayloadWithoutCreatedAt,
             titulo: fullNotePayload.title,
             contenido: fullNotePayload.content,
             updated: now
           };
-          try {
-            if(isNewNote){
-              const createdRef = await addDoc(notesCollectionRef, {
-                ...firestorePayload,
-                createdAt: now,
-                updatedAt: now
-              });
-              Object.assign(editingNote, { id: createdRef.id });
-            } else {
-              const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
-              await updateDoc(noteRef, firestorePayload);
-            }
-          } catch(error){
-            console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
-            if(throwOnError) throw error;
+          if(isNewNote){
+            const createdRef = await addDoc(notesCollectionRef, {
+              ...firestorePayload,
+              createdAt: now,
+              updatedAt: now
+            });
+            currentNoteId = createdRef.id;
+            Object.assign(editingNote, { id: createdRef.id });
+          } else {
+            const noteRef = doc(firestoreDb, 'users', authenticatedUserId, 'notes', currentNoteId);
+            await updateDoc(noteRef, firestorePayload);
           }
         } else if(isNewNote){
           Object.assign(editingNote, { id: editingNote.id || generateId() });
+          currentNoteId = editingNote.id;
         }
 
-        editingNote.userId = currentUser?.id || editingNote.userId || null;
+        editingNote.userId = authenticatedUserId || editingNote.userId || null;
+        editingNote.id = currentNoteId || editingNote.id;
         editingNote.estado = 'activa';
         editingNote.createdAt = createdAt;
         editingNote.updatedAt = now;
@@ -3151,16 +3158,20 @@
         editorLastSavedSnapshot = buildEditorSnapshot();
         renderNotes();
         refreshNotebookWorkspace();
-        setRecentSaveIndicator('Guardado correctamente');
-        showToast('Guardado correctamente');
+        setRecentSaveIndicator('Guardado ✅');
         if(shouldClose){ editingNote=null; closeEditor(); }
-      };
-
-      noteSaveInFlight = run();
-      try {
-        await noteSaveInFlight;
+      } catch(error){
+        console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
+        setRecentSaveIndicator('Error al guardar');
+        if(throwOnError) throw error;
       } finally {
-        noteSaveInFlight = null;
+        isSaving = false;
+        if(pendingSave){
+          pendingSave = false;
+          saveCurrentNote({ shouldClose:false, throwOnError:false }).catch(error=>{
+            console.error('Error en guardado pendiente:', error);
+          });
+        }
       }
     }
 
