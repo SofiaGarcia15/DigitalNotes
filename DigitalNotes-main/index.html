@@ -425,6 +425,38 @@
       color:var(--muted)
     }
 
+    .emoji-picker{
+      position:absolute;
+      top:calc(100% + 8px);
+      left:0;
+      background:var(--panel-bg);
+      border:1px solid var(--border);
+      border-radius:12px;
+      box-shadow:0 10px 22px rgba(0,0,0,.14);
+      padding:10px;
+      width:270px;
+      z-index:30;
+      display:none;
+    }
+
+    .emoji-picker.visible{display:block;}
+
+    .emoji-grid{
+      display:grid;
+      grid-template-columns:repeat(8,1fr);
+      gap:6px;
+    }
+
+    .emoji-key{
+      border:1px solid var(--border);
+      background:var(--input-bg);
+      border-radius:8px;
+      cursor:pointer;
+      padding:6px 0;
+      font-size:18px;
+      line-height:1;
+    }
+
     .toolbar .text-color-tool{
       width:44px;
       height:44px;
@@ -1673,7 +1705,7 @@
             <button id="textColorTool" class="text-color-tool" title="Color de texto">A</button>
             <input type="color" id="textColorToolPicker" class="text-color-picker" value="#6b4350" title="Paleta de color de texto">
           </div>
-          <div class="tool-group">
+          <div class="tool-group" style="position:relative;">
             <button id="fontDecrease" title="Disminuir tamaño">A-</button>
             <button id="fontIncrease" title="Aumentar tamaño">A+</button>
             <select id="fontSelect">
@@ -1687,7 +1719,9 @@
               <option value="Comic Sans MS">Comic Sans MS</option>
             </select>
             <button id="emojiBtn" type="button">Emoji</button>
-            <span id="activeFontLabel" class="tool-label">Fuente activa: Predeterminada</span>
+            <div id="emojiPicker" class="emoji-picker" aria-label="Teclado de emojis">
+              <div class="emoji-grid" id="emojiGrid"></div>
+            </div>
           </div>
           <div class="tool-group">
             <input type="color" id="highlightColor" value="#fff2a8" title="Subrayado de color">
@@ -2406,7 +2440,7 @@
         dots.addEventListener('click', e=>{ e.stopPropagation(); closeAllMenus(); menu.style.display = menu.style.display==='block' ? 'none' : 'block'; });
         editBtn.addEventListener('click', e=>{ e.stopPropagation(); openNotebookModal(nb); menu.style.display='none'; });
         renameBtn.addEventListener('click', e=>{ e.stopPropagation(); openNotebookModal(nb, {renameOnly:true}); menu.style.display='none'; });
-        delBtn.addEventListener('click', e=>{ e.stopPropagation(); if(confirm('¿Eliminar cuaderno y sus notas?')) deleteNotebook(nb.id); menu.style.display='none'; });
+        delBtn.addEventListener('click', e=>{ e.stopPropagation(); if(confirm('¿Eliminar cuaderno? Las notas seguirán en Notas Recientes.')) deleteNotebook(nb.id); menu.style.display='none'; });
         img.addEventListener('click', ()=>{ setActiveNotebookCard(nb.id); openNotebookView(nb.id); });
         p.addEventListener('click', ()=>{ setActiveNotebookCard(nb.id); openNotebookView(nb.id); });
 
@@ -3205,14 +3239,20 @@
       saveState(); renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); qs('#overlayNotebook').style.display='none';
     });
     async function deleteNotebook(id){
-      if(!confirm('Eliminar libreta y mover sus notas a papelera. ¿Continuar?')) return;
-      const notebookNotes = state.notes.filter(n=>n.notebookId===id);
-      const remainingNotes = state.notes.filter(n=>n.notebookId!==id);
-      const trashed = notebookNotes.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: Date.now() }));
-      await Promise.all(trashed.map(note=>syncTrashedNoteToFirestore(note)));
-      state.notes = remainingNotes;
-      state.trash = [...state.trash.filter(t=>!notebookNotes.some(n=>n.id===t.id)), ...trashed];
-      ensureDistinctCollections(state);
+      if(state.notebooks.length <= 1){
+        alert('Debe existir al menos un cuaderno.');
+        return;
+      }
+      if(!confirm('Eliminar cuaderno. Sus notas se moverán a General y seguirán en Notas Recientes. ¿Continuar?')) return;
+      const fallbackNotebookId = state.notebooks.find(nb=>nb.id!==id)?.id || state.notebooks[0]?.id;
+      state.notes = state.notes.map(note=>{
+        if(note.notebookId !== id) return note;
+        return { ...note, notebookId:fallbackNotebookId, notebook:fallbackNotebookId, updated:Date.now(), updatedAt:Date.now() };
+      });
+      state.trash = state.trash.map(note=>{
+        if(note.notebookId !== id) return note;
+        return { ...note, notebookId:fallbackNotebookId, notebook:fallbackNotebookId };
+      });
       state.notebooks = state.notebooks.filter(nb=>nb.id!==id);
       await saveState();
       renderNotebooks(); renderNotes(); refreshNotebookWorkspace(); renderTrash();
@@ -3778,14 +3818,11 @@
 
     function updateActiveFontUI(){
       const select = qs('#fontSelect');
-      const label = qs('#activeFontLabel');
       select.classList.toggle('active-select', Boolean(currentFontFamily));
       if(currentFontFamily){
         select.value = currentFontFamily;
-        label.textContent = `Fuente activa: ${currentFontFamily}`;
       } else {
         select.value = '';
-        label.textContent = 'Fuente activa: Predeterminada';
       }
     }
 
@@ -3801,11 +3838,41 @@
       onUserChange();
     });
 
-    qs('#emojiBtn').addEventListener('click', ()=>{
-      const value = prompt('Escribe o pega un emoji para insertarlo:');
-      if(!value) return;
-      insertHtmlAtCursor(`${value} `);
+    const EMOJI_KEYS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤓','🤔','😴','🥳','😇','🤗','🙌','👏','👍','👎','🙏','💪','🫶','❤️','🩷','🔥','✨','⭐','🌈','🌸','🌟','🎉','🎵','📝','📌','📅','💡','📚','☕','🍀','🌙','✅'];
+
+    function renderEmojiKeyboard(){
+      const emojiGrid = qs('#emojiGrid');
+      if(!emojiGrid) return;
+      emojiGrid.innerHTML = '';
+      EMOJI_KEYS.forEach(emoji=>{
+        const key = document.createElement('button');
+        key.type = 'button';
+        key.className = 'emoji-key';
+        key.textContent = emoji;
+        key.addEventListener('click', ()=>{
+          insertHtmlAtCursor(`${emoji} `);
+          qs('#editor').focus();
+          onUserChange();
+        });
+        emojiGrid.appendChild(key);
+      });
+    }
+
+    qs('#emojiBtn').addEventListener('click', (event)=>{
+      event.stopPropagation();
+      qs('#emojiPicker').classList.toggle('visible');
+      qs('#editor').focus();
       onUserChange();
+    });
+
+    document.addEventListener('click', (event)=>{
+      const picker = qs('#emojiPicker');
+      if(!picker) return;
+      const isInsidePicker = picker.contains(event.target);
+      const isEmojiButton = event.target.closest('#emojiBtn');
+      if(!isInsidePicker && !isEmojiButton){
+        picker.classList.remove('visible');
+      }
     });
 
     qs('#applyHighlight').addEventListener('click', ()=>{
@@ -3816,7 +3883,7 @@
     });
 
     qs('#insertChecklist').addEventListener('click', ()=>{
-      insertHtmlAtCursor(`<div><label><input type="checkbox" /> Tarea</label></div>`);
+      insertHtmlAtCursor(`<div><label><input type="checkbox" /></label></div>`);
       onUserChange();
     });
 
@@ -4065,6 +4132,7 @@
       renderNotebooks();
       renderNotes();
       renderTemplateGallery();
+      renderEmojiKeyboard();
       renderTrash();
       showView('notes');
       populateEditorNotebook();
