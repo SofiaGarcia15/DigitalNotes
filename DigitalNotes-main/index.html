@@ -1956,6 +1956,7 @@
       <p id="settingsUserBirth" style="margin:0 0 16px"></p>
       <div style="display:flex;justify-content:flex-end;gap:8px">
         <button id="closeSettingsBtn" class="btn" style="background:#ddd">Cerrar</button>
+        <button id="deleteAccountBtn" class="btn" style="background:#f4a4b8">Eliminar cuenta</button>
         <button id="logoutBtn" class="btn">Cerrar sesión</button>
       </div>
     </div>
@@ -1981,8 +1982,8 @@
 
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, deleteUser } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -2029,7 +2030,6 @@
     let notesDocUnsubscribe = null;
     let isApplyingRemoteState = false;
     let isSaving = false;
-    let editorAutosaveTimer = null;
     let editorLastSavedSnapshot = '';
     let recentIndicatorTimer = null;
     let hasQueuedSave = false;
@@ -2063,6 +2063,9 @@
       const trashRef = doc(firestoreDb, 'users', currentUser.id, 'trash', note.id);
       await setDoc(trashRef, {
         ...note,
+        titulo: note.title || '',
+        contenido: note.content || '',
+        estado: 'papelera',
         deleted: true,
         notebookId: note.notebookId || note.notebook || null,
         notebook: note.notebookId || note.notebook || null,
@@ -2086,6 +2089,9 @@
       const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', note.id);
       await setDoc(noteRef, {
         ...note,
+        titulo: note.title || '',
+        contenido: note.content || '',
+        estado: 'activa',
         deleted: false,
         notebookId: note.notebookId || note.notebook || null,
         notebook: note.notebookId || note.notebook || null,
@@ -2108,13 +2114,15 @@
       const resolvedNotebookId = note.notebookId || note.notebook || fallbackNotebookId;
       const hasDeletedFlag = typeof note.deleted === 'boolean';
       const isDeleted = hasDeletedFlag ? note.deleted : Boolean(note.deletedAt);
+      const normalizedStatus = note.estado || note.status || (isDeleted ? 'papelera' : 'activa');
       return {
         id: note.id || generateId(),
         title: note.title || '',
         content: typeof note.content === 'string' ? note.content : '',
         notebookId: resolvedNotebookId,
         notebook: resolvedNotebookId,
-        deleted: isDeleted,
+        deleted: normalizedStatus === 'papelera',
+        estado: normalizedStatus,
         fontFamily: note.fontFamily || null,
         fontSize: note.fontSize || null,
         textColor: note.textColor || null,
@@ -2129,8 +2137,8 @@
     }
 
     function ensureDistinctCollections(nextState){
-      nextState.notes = nextState.notes.filter(note=>!note.deleted);
-      nextState.trash = nextState.trash.map(note=>({ ...note, deleted:true, deletedAt: note.deletedAt || Date.now() }));
+      nextState.notes = nextState.notes.filter(note=>note.estado !== 'papelera' && !note.deleted);
+      nextState.trash = nextState.trash.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now() }));
       const trashIds = new Set(nextState.trash.map(note=>note.id));
       nextState.notes = nextState.notes.filter(note=>!trashIds.has(note.id));
       const noteIds = new Set(nextState.notes.map(note=>note.id));
@@ -2150,11 +2158,11 @@
       }
       nextState.notebooks = nextState.notebooks.map(nb=>({ coverColor:'#f08aba', bookBgColor:'#ffcae3', bookBgImage:null, ...nb }));
       nextState.notes = nextState.notes.map(note=>normalizeNote(note, nextState.notebooks[0].id));
-      nextState.trash = nextState.trash.map(note=>({ deleted:true, deletedAt: note.deletedAt || Date.now(), ...normalizeNote(note, nextState.notebooks[0].id) }));
-      const softDeletedNotes = nextState.notes.filter(note=>note.deleted || Boolean(note.deletedAt));
+      nextState.trash = nextState.trash.map(note=>({ estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now(), ...normalizeNote(note, nextState.notebooks[0].id) }));
+      const softDeletedNotes = nextState.notes.filter(note=>note.deleted || note.estado === 'papelera' || Boolean(note.deletedAt));
       if(softDeletedNotes.length){
-        nextState.notes = nextState.notes.filter(note=>!(note.deleted || note.deletedAt));
-        nextState.trash = [...nextState.trash, ...softDeletedNotes.map(note=>({ ...note, deleted:true, deletedAt: note.deletedAt || Date.now() }))];
+        nextState.notes = nextState.notes.filter(note=>!(note.deleted || note.estado === 'papelera' || note.deletedAt));
+        nextState.trash = [...nextState.trash, ...softDeletedNotes.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now() }))];
       }
       const fallbackNotebookId = nextState.notebooks[0].id;
       nextState.notes = nextState.notes.map(note=>{
@@ -2416,7 +2424,7 @@
       const searchVal = qs('#searchInput').value.toLowerCase();
       const knownNotebookIds = new Set(state.notebooks.map(nb=>nb.id));
       const notesToRender = state.notes.filter(n=>{
-        if(n.deleted) return false;
+        if(n.deleted || n.estado === 'papelera') return false;
         const effectiveNotebook = knownNotebookIds.has(n.notebookId) ? n.notebookId : state.notebooks[0]?.id;
         const matchNotebook = filterId==='all'||effectiveNotebook===filterId;
         const matchSearch = !searchVal || (stripHtml(n.content).toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal));
@@ -2457,7 +2465,7 @@
     }
 
     function getNotebookNotes(notebookId){
-      return state.notes.filter(n=>n.notebookId===notebookId && !n.deleted).sort((a,b)=>a.created - b.created);
+      return state.notes.filter(n=>n.notebookId===notebookId && !n.deleted && n.estado !== 'papelera').sort((a,b)=>a.created - b.created);
     }
 
     let activeNotebookId = null;
@@ -2815,6 +2823,7 @@
         updated: now,
         createdAt: createdAt,
         updatedAt: now,
+        estado: 'activa',
         deleted: false
       };
     }
@@ -2858,7 +2867,6 @@
       qs('#editor').focus();
     }
     function closeEditor(){
-      clearTimeout(editorAutosaveTimer);
       setRecentSaveIndicator('');
       qs('#overlayEditor').style.display='none';
       editingNote=null;
@@ -2883,11 +2891,11 @@
         console.error('Error al guardar manualmente:', error);
       }
     });
-    qs('#editor').addEventListener('input', queueEditorAutosave);
-    qs('#noteTitle').addEventListener('input', queueEditorAutosave);
-    qs('#editorNotebook').addEventListener('change', queueEditorAutosave);
+    qs('#editor').addEventListener('input', onUserChange);
+    qs('#noteTitle').addEventListener('input', onUserChange);
+    qs('#editorNotebook').addEventListener('change', onUserChange);
 
-    const editorMutationObserver = new MutationObserver(()=>queueEditorAutosave());
+    const editorMutationObserver = new MutationObserver(()=>onUserChange());
     editorMutationObserver.observe(qs('#editor'), { childList:true, subtree:true, characterData:true, attributes:true });
 
     qs('#calendarBtn').addEventListener('click', ()=>openCalendarModal());
@@ -3005,10 +3013,12 @@
       }
       indicator.textContent = message;
       indicator.classList.add('visible');
-      recentIndicatorTimer = setTimeout(()=>{
-        indicator.classList.remove('visible');
-        indicator.textContent = '';
-      }, 1200);
+      if(message === 'Guardado' || message === 'Guardado correctamente'){
+        recentIndicatorTimer = setTimeout(()=>{
+          indicator.classList.remove('visible');
+          indicator.textContent = '';
+        }, 1500);
+      }
     }
 
     function buildEditorSnapshot(){
@@ -3023,14 +3033,13 @@
       });
     }
 
-    function queueEditorAutosave(){
+    function onUserChange(){
       if(qs('#overlayEditor').style.display !== 'flex') return;
-      clearTimeout(editorAutosaveTimer);
-      editorAutosaveTimer = setTimeout(async ()=>{
-        if(buildEditorSnapshot() === editorLastSavedSnapshot) return;
-        setRecentSaveIndicator('Guardando...');
-        await saveCurrentNote({ shouldClose:false, throwOnError:false });
-      }, 1000);
+      if(buildEditorSnapshot() === editorLastSavedSnapshot){
+        setRecentSaveIndicator('');
+        return;
+      }
+      setRecentSaveIndicator('Cambios sin guardar');
     }
 
 
@@ -3043,6 +3052,7 @@
       if(!selectedCalendarDay) return alert('Selecciona una fecha');
       const formatted = selectedCalendarDay.toLocaleDateString(getLocaleTag(), { day:'2-digit', month:'long', year:'numeric' });
       insertHtmlAtCursor(`<p><strong>📅 ${formatted}</strong></p>`);
+      onUserChange();
       closeCalendarModal();
     });
 
@@ -3057,12 +3067,23 @@
         return;
       }
 
+      if(buildEditorSnapshot() === editorLastSavedSnapshot){
+        setRecentSaveIndicator('Guardado correctamente');
+        if(shouldClose){ editingNote=null; closeEditor(); }
+        return;
+      }
+
       const run = async ()=>{
+        setRecentSaveIndicator('Guardando...');
         const now = Date.now();
         const isNewNote = !editingNote;
         const noteId = editingNote?.id || generateId();
         const createdAt = editingNote?.created || editingNote?.createdAt || now;
-        const fullNotePayload = buildNotePayloadForSave(noteId, createdAt);
+        const fullNotePayload = {
+          ...buildNotePayloadForSave(noteId, createdAt),
+          estado:'activa',
+          deleted:false
+        };
 
         if(editingNote){
           Object.assign(editingNote, fullNotePayload);
@@ -3080,9 +3101,12 @@
           try {
             await setDoc(noteRef, {
               ...fullNotePayload,
+              titulo: fullNotePayload.title,
+              contenido: fullNotePayload.content,
+              estado: 'activa',
               createdAt: isNewNote ? serverTimestamp() : editingNote.createdAt || serverTimestamp(),
               updatedAt: serverTimestamp()
-            }, { merge:false });
+            }, { merge:true });
           } catch(error){
             console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
             if(throwOnError) throw error;
@@ -3093,7 +3117,8 @@
         editorLastSavedSnapshot = buildEditorSnapshot();
         renderNotes();
         refreshNotebookWorkspace();
-        setRecentSaveIndicator('');
+        setRecentSaveIndicator('Guardado correctamente');
+        showToast('Guardado correctamente');
         if(shouldClose){ editingNote=null; closeEditor(); }
       };
 
@@ -3138,7 +3163,7 @@
       if(!confirm('Eliminar libreta y mover sus notas a papelera. ¿Continuar?')) return;
       const notebookNotes = state.notes.filter(n=>n.notebookId===id);
       const remainingNotes = state.notes.filter(n=>n.notebookId!==id);
-      const trashed = notebookNotes.map(note=>({ ...note, deleted:true, deletedAt: Date.now() }));
+      const trashed = notebookNotes.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: Date.now() }));
       await Promise.all(trashed.map(note=>syncTrashedNoteToFirestore(note)));
       state.notes = remainingNotes;
       state.trash = [...state.trash.filter(t=>!notebookNotes.some(n=>n.id===t.id)), ...trashed];
@@ -3164,7 +3189,7 @@
       if(!note) return;
       state.notes = state.notes.filter(n=>n.id!==noteId);
       state.trash = state.trash.filter(n=>n.id!==noteId);
-      const trashedNote = { ...note, deleted:true, deletedAt: Date.now() };
+      const trashedNote = { ...note, estado:'papelera', deleted:true, deletedAt: Date.now() };
       state.trash.push(trashedNote);
       ensureDistinctCollections(state);
       await syncTrashedNoteToFirestore(trashedNote);
@@ -3181,7 +3206,7 @@
       const note = state.trash.find(n=>n.id===noteId);
       if(!note) return;
       state.trash = state.trash.filter(n=>n.id!==noteId);
-      const restored = { ...note, deleted:false };
+      const restored = { ...note, estado:'activa', deleted:false };
       delete restored.deletedAt;
       if(!state.notebooks.some(nb=>nb.id===restored.notebookId)){
         restored.notebookId = state.notebooks[0]?.id;
@@ -3211,7 +3236,7 @@
       if(!grid) return;
       grid.innerHTML = '';
       const trashed = state.trash
-        .filter(note=>note.deleted)
+        .filter(note=>note.deleted || note.estado === 'papelera')
         .sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
       if(trashed.length === 0){
         const empty = document.createElement('div');
@@ -3299,6 +3324,7 @@
       const bg = qs('#colorPreview').style.background;
       editorVisualState.backgroundColor = bg;
       qs('#editor').style.background = bg;
+      onUserChange();
     });
 
     qs('#textColorTool').addEventListener('click', ()=>{
@@ -3310,6 +3336,7 @@
       editorVisualState.textColor = color;
       qs('#editor').style.color = color;
       qs('#editor').focus();
+      onUserChange();
     });
 
     // Quick palette generation
@@ -3318,7 +3345,7 @@
       const container = qs('#quickPalette'); container.innerHTML='';
       quickColors.forEach(c=>{
         const btn = document.createElement('button'); btn.style.background=c;
-        btn.addEventListener('click', ()=>{ qs('#editor').style.background=c; editorVisualState.backgroundColor=c; });
+        btn.addEventListener('click', ()=>{ qs('#editor').style.background=c; editorVisualState.backgroundColor=c; onUserChange(); });
         container.appendChild(btn);
       });
     }
@@ -3331,6 +3358,7 @@
       const dataUrl = await fileToDataUrl(f);
       // insert at caret position in contenteditable
       insertHtmlAtCursor(`<img src="${dataUrl}" class="note-img" style="width:70%;display:block;margin:8px 0;position:relative;left:0px;top:0px;" />`);
+      onUserChange();
       e.target.value = '';
     });
 
@@ -3377,6 +3405,7 @@
       const computedSize = window.getComputedStyle(qs('#editor')).fontSize;
       editorVisualState.fontSize = computedSize || null;
       qs('#editor').focus();
+      onUserChange();
     }
 
     qs('#fontIncrease').addEventListener('click', ()=>changeSelectionFontSize(1));
@@ -3395,7 +3424,8 @@
         sw.addEventListener('click', ()=>{
           qs('#editor').style.background = color;
           editorVisualState.backgroundColor = color;
-            });
+          onUserChange();
+        });
         wrap.appendChild(sw);
       });
     }
@@ -3429,6 +3459,7 @@
         </figure>
         <p><br></p>
       `);
+      onUserChange();
     }
 
     qsa('.template-btn').forEach(btn=>{
@@ -3681,7 +3712,8 @@
         qs('#editor').focus();
         document.execCommand(btn.dataset.cmd, false, null);
         qs('#editor').focus();
-        });
+        onUserChange();
+      });
     });
 
     qsa('.toolbar [data-align]').forEach(btn=>{
@@ -3691,7 +3723,8 @@
         qs('#editor').focus();
         document.execCommand(cmd, false, null);
         qs('#editor').focus();
-        });
+        onUserChange();
+      });
     });
 
     function applyEditorFont(fontName=''){
@@ -3720,22 +3753,26 @@
       applyEditorFont(currentFontFamily);
       updateActiveFontUI();
       qs('#editor').focus();
+      onUserChange();
     });
 
     qs('#emojiBtn').addEventListener('click', ()=>{
       const value = prompt('Escribe o pega un emoji para insertarlo:');
       if(!value) return;
       insertHtmlAtCursor(`${value} `);
+      onUserChange();
     });
 
     qs('#applyHighlight').addEventListener('click', ()=>{
       const color = qs('#highlightColor').value;
       document.execCommand('hiliteColor', false, color);
       qs('#editor').focus();
+      onUserChange();
     });
 
     qs('#insertChecklist').addEventListener('click', ()=>{
       insertHtmlAtCursor(`<div><label><input type="checkbox" /> Tarea</label></div>`);
+      onUserChange();
     });
 
     // --- Image controls ---
@@ -3908,6 +3945,40 @@
         console.error('Error al cerrar sesión en Firebase Auth:', error);
         showToast('No se pudo cerrar la sesión. Intenta nuevamente.');
       }
+    });
+
+    async function deleteCollectionDocs(path){
+      const firestoreDb = getFirebaseFirestoreDb();
+      const snapshot = await getDocs(collection(firestoreDb, ...path));
+      await Promise.all(snapshot.docs.map(item=>deleteDoc(item.ref)));
+    }
+
+    async function deleteCurrentUserAccount(){
+      if(!currentUser) return;
+      const confirmed = confirm('¿Estás seguro de eliminar tu cuenta? Esta acción no se puede deshacer.');
+      if(!confirmed) return;
+
+      try {
+        await deleteCollectionDocs(['users', currentUser.id, 'notes']);
+        await deleteCollectionDocs(['users', currentUser.id, 'trash']);
+        const auth = getFirebaseAuthInstance();
+        const authUser = auth.currentUser;
+        if(!authUser) throw new Error('No hay sesión activa para eliminar.');
+        await deleteUser(authUser);
+        showToast('Cuenta eliminada correctamente');
+        await clearSession({ silent:true });
+      } catch(error){
+        console.error('Error al eliminar cuenta:', error);
+        if(error?.code === 'auth/requires-recent-login'){
+          showToast('Por seguridad, vuelve a iniciar sesión y reintenta eliminar tu cuenta.');
+          return;
+        }
+        showToast('No se pudo eliminar la cuenta. Intenta nuevamente.');
+      }
+    }
+
+    qs('#deleteAccountBtn').addEventListener('click', async ()=>{
+      await deleteCurrentUserAccount();
     });
 
     // --- Utility: close overlays when clicking outside modal content ---
