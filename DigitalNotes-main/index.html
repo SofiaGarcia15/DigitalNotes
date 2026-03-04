@@ -665,6 +665,32 @@
       cursor:pointer;
     }
 
+    .emoji-panel{
+      display:none;
+      margin-bottom:10px;
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px;
+      background:var(--panel-bg);
+      max-width:340px;
+    }
+
+    .emoji-grid{
+      display:grid;
+      grid-template-columns:repeat(8, minmax(30px, 1fr));
+      gap:6px;
+    }
+
+    .emoji-grid button{
+      border:1px solid var(--border);
+      background:var(--card-bg);
+      border-radius:8px;
+      padding:6px 0;
+      cursor:pointer;
+      font-size:18px;
+      line-height:1;
+    }
+
     .draw-fullscreen-overlay{
       position:fixed;
       inset:0;
@@ -1717,6 +1743,10 @@
         <div class="compact-color-grid" id="compactColorGrid"></div>
       </div>
 
+      <div class="emoji-panel" id="emojiPanel">
+        <div class="emoji-grid" id="emojiGrid"></div>
+      </div>
+
       <div id="colorPanel" style="display:none;margin-bottom:10px">
         <div class="color-panel">
           <div class="row">
@@ -1982,8 +2012,8 @@
 
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, deleteUser } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, deleteUser, reauthenticateWithCredential, EmailAuthProvider } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, getDocs, writeBatch } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -2027,7 +2057,7 @@
     let currentUser = null;
     let firebaseAuth = null;
     let firebaseFirestoreDb = null;
-    let notesDocUnsubscribe = null;
+    let notesSyncUnsubscribers = [];
     let isApplyingRemoteState = false;
     let isSaving = false;
     let editorLastSavedSnapshot = '';
@@ -2060,45 +2090,40 @@
     async function syncTrashedNoteToFirestore(note){
       if(!currentUser || !note?.id) return;
       const firestoreDb = getFirebaseFirestoreDb();
-      const trashRef = doc(firestoreDb, 'users', currentUser.id, 'trash', note.id);
-      await setDoc(trashRef, {
-        ...note,
-        titulo: note.title || '',
+      const noteRef = doc(firestoreDb, 'notes', note.id);
+      await setDoc(noteRef, {
+        uid: currentUser.id,
         contenido: note.content || '',
-        estado: 'papelera',
-        deleted: true,
         notebookId: note.notebookId || note.notebook || null,
-        notebook: note.notebookId || note.notebook || null,
-        deletedAt: note.deletedAt || Date.now(),
-        updatedAt: serverTimestamp()
-      }, { merge:false });
-      const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', note.id);
-      await deleteDoc(noteRef).catch(()=>{});
+        deleted: true,
+        createdAt: note.createdAt || note.created || Date.now(),
+        updatedAt: note.updatedAt || note.updated || Date.now(),
+        title: note.title || '',
+        content: note.content || ''
+      }, { merge:true });
     }
 
     async function removeTrashedNoteFromFirestore(noteId){
       if(!currentUser || !noteId) return;
       const firestoreDb = getFirebaseFirestoreDb();
-      const trashRef = doc(firestoreDb, 'users', currentUser.id, 'trash', noteId);
-      await deleteDoc(trashRef).catch(()=>{});
+      const noteRef = doc(firestoreDb, 'notes', noteId);
+      await deleteDoc(noteRef).catch(()=>{});
     }
 
     async function syncRestoredNoteToFirestore(note){
       if(!currentUser || !note?.id) return;
       const firestoreDb = getFirebaseFirestoreDb();
-      const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', note.id);
+      const noteRef = doc(firestoreDb, 'notes', note.id);
       await setDoc(noteRef, {
-        ...note,
-        titulo: note.title || '',
+        uid: currentUser.id,
         contenido: note.content || '',
-        estado: 'activa',
         deleted: false,
         notebookId: note.notebookId || note.notebook || null,
-        notebook: note.notebookId || note.notebook || null,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      }, { merge:false });
-      await removeTrashedNoteFromFirestore(note.id);
+        createdAt: note.createdAt || note.created || Date.now(),
+        updatedAt: note.updatedAt || note.updated || Date.now(),
+        title: note.title || '',
+        content: note.content || ''
+      }, { merge:true });
     }
 
     function getDefaultState(){
@@ -2177,10 +2202,10 @@
     }
 
     function stopNotesSync(){
-      if(typeof notesDocUnsubscribe === 'function'){
-        notesDocUnsubscribe();
-      }
-      notesDocUnsubscribe = null;
+      notesSyncUnsubscribers.forEach(unsubscribe=>{
+        if(typeof unsubscribe === 'function') unsubscribe();
+      });
+      notesSyncUnsubscribers = [];
     }
 
     function applyState(nextState){
@@ -2197,27 +2222,66 @@
       if(!currentUser || isApplyingRemoteState) return;
       ensureDistinctCollections(state);
       const firestoreDb = getFirebaseFirestoreDb();
-      await setDoc(doc(firestoreDb, 'notes', currentUser.id), {
+      await setDoc(doc(firestoreDb, 'userStates', currentUser.id), {
         userId: currentUser.id,
         notebooks: state.notebooks,
-        notes: state.notes,
-        trash: state.trash,
         darkMode: state.darkMode,
         updatedAt: serverTimestamp()
       }, { merge: true });
     }
 
+    function mapFirestoreNoteToLocal(snapshotDoc, deleted){
+      const payload = snapshotDoc.data() || {};
+      return normalizeNote({
+        id: snapshotDoc.id,
+        uid: payload.uid,
+        title: payload.title || payload.titulo || '',
+        content: payload.content || payload.contenido || '',
+        notebookId: payload.notebookId,
+        createdAt: payload.createdAt?.toMillis ? payload.createdAt.toMillis() : Number(payload.createdAt) || Date.now(),
+        updatedAt: payload.updatedAt?.toMillis ? payload.updatedAt.toMillis() : Number(payload.updatedAt) || Date.now(),
+        deleted: Boolean(deleted)
+      }, state.notebooks[0]?.id || generateId());
+    }
+
     function startNotesSync(userId){
       stopNotesSync();
       const firestoreDb = getFirebaseFirestoreDb();
-      notesDocUnsubscribe = onSnapshot(doc(firestoreDb, 'notes', userId), snapshot=>{
+      const userStateUnsubscribe = onSnapshot(doc(firestoreDb, 'userStates', userId), snapshot=>{
         const data = snapshot.data();
         isApplyingRemoteState = true;
-        applyState(data ? data : getDefaultState());
+        const baseState = normalizeState(data ? { ...data, notes:state.notes, trash:state.trash } : { ...getDefaultState(), notes:state.notes, trash:state.trash });
+        applyState(baseState);
         isApplyingRemoteState = false;
       }, error=>{
         console.error('Error al sincronizar notas del usuario:', error);
       });
+
+      const recentQuery = query(
+        collection(firestoreDb, 'notes'),
+        where('uid', '==', userId),
+        where('deleted', '==', false),
+        orderBy('updatedAt', 'desc')
+      );
+      const trashQuery = query(
+        collection(firestoreDb, 'notes'),
+        where('uid', '==', userId),
+        where('deleted', '==', true),
+        orderBy('updatedAt', 'desc')
+      );
+
+      const recentUnsubscribe = onSnapshot(recentQuery, snapshot=>{
+        state.notes = snapshot.docs.map(docItem=>mapFirestoreNoteToLocal(docItem, false));
+        renderNotes();
+        refreshNotebookWorkspace();
+      }, error=>console.error('Error al obtener notas recientes:', error));
+
+      const trashUnsubscribe = onSnapshot(trashQuery, snapshot=>{
+        state.trash = snapshot.docs.map(docItem=>mapFirestoreNoteToLocal(docItem, true));
+        if(currentView === 'papelera') renderTrash();
+      }, error=>console.error('Error al obtener papelera:', error));
+
+      notesSyncUnsubscribers = [userStateUnsubscribe, recentUnsubscribe, trashUnsubscribe];
     }
 
     function mapFirebaseError(error){
@@ -3097,15 +3161,17 @@
 
         if(currentUser){
           const firestoreDb = getFirebaseFirestoreDb();
-          const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
+          const noteRef = doc(firestoreDb, 'notes', editingNote.id);
           try {
             await setDoc(noteRef, {
-              ...fullNotePayload,
-              titulo: fullNotePayload.title,
+              uid: currentUser.id,
               contenido: fullNotePayload.content,
-              estado: 'activa',
-              createdAt: isNewNote ? serverTimestamp() : editingNote.createdAt || serverTimestamp(),
-              updatedAt: serverTimestamp()
+              notebookId: fullNotePayload.notebookId,
+              deleted: false,
+              createdAt: isNewNote ? serverTimestamp() : (editingNote.createdAt || fullNotePayload.createdAt || serverTimestamp()),
+              updatedAt: serverTimestamp(),
+              title: fullNotePayload.title,
+              content: fullNotePayload.content
             }, { merge:true });
           } catch(error){
             console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
@@ -3118,7 +3184,6 @@
         renderNotes();
         refreshNotebookWorkspace();
         setRecentSaveIndicator('Guardado correctamente');
-        showToast('Guardado correctamente');
         if(shouldClose){ editingNote=null; closeEditor(); }
       };
 
@@ -3163,7 +3228,7 @@
       if(!confirm('Eliminar libreta y mover sus notas a papelera. ¿Continuar?')) return;
       const notebookNotes = state.notes.filter(n=>n.notebookId===id);
       const remainingNotes = state.notes.filter(n=>n.notebookId!==id);
-      const trashed = notebookNotes.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: Date.now() }));
+      const trashed = notebookNotes.map(note=>{ const trashedAt = Date.now(); return { ...note, estado:'papelera', deleted:true, deletedAt: trashedAt, updated: trashedAt, updatedAt: trashedAt }; });
       await Promise.all(trashed.map(note=>syncTrashedNoteToFirestore(note)));
       state.notes = remainingNotes;
       state.trash = [...state.trash.filter(t=>!notebookNotes.some(n=>n.id===t.id)), ...trashed];
@@ -3189,7 +3254,8 @@
       if(!note) return;
       state.notes = state.notes.filter(n=>n.id!==noteId);
       state.trash = state.trash.filter(n=>n.id!==noteId);
-      const trashedNote = { ...note, estado:'papelera', deleted:true, deletedAt: Date.now() };
+      const trashedAt = Date.now();
+      const trashedNote = { ...note, estado:'papelera', deleted:true, deletedAt: trashedAt, updated: trashedAt, updatedAt: trashedAt };
       state.trash.push(trashedNote);
       ensureDistinctCollections(state);
       await syncTrashedNoteToFirestore(trashedNote);
@@ -3237,7 +3303,7 @@
       grid.innerHTML = '';
       const trashed = state.trash
         .filter(note=>note.deleted || note.estado === 'papelera')
-        .sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
+        .sort((a,b)=>(b.updatedAt||b.updated||0)-(a.updatedAt||a.updated||0));
       if(trashed.length === 0){
         const empty = document.createElement('div');
         empty.className = 'note-card';
@@ -3252,7 +3318,7 @@
         const body = document.createElement('div'); body.className='note-body preview'; body.textContent = truncate(stripHtml(n.content), 250);
         const meta = document.createElement('div');
         meta.className='note-meta';
-        meta.textContent = `Eliminada: ${new Date(n.deletedAt || n.updated || Date.now()).toLocaleString(getLocaleTag())}`;
+        meta.textContent = `Actualizada: ${new Date(n.updatedAt || n.updated || Date.now()).toLocaleString(getLocaleTag())}`;
         const actions = document.createElement('div');
         actions.style.display = 'flex';
         actions.style.gap = '8px';
@@ -3756,11 +3822,28 @@
       onUserChange();
     });
 
+    const EMOJI_ITEMS = ['😀','😁','😂','😊','😍','😘','😎','🤩','🥳','😇','😌','🤗','🤔','😴','😢','😭','😡','👍','👏','🙏','💪','🔥','✨','🌸','🌈','⭐','💡','📌','📝','📚','💻','🎉'];
+
+    function renderEmojiGrid(){
+      const grid = qs('#emojiGrid');
+      if(!grid) return;
+      grid.innerHTML = '';
+      EMOJI_ITEMS.forEach(item=>{
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = item;
+        button.addEventListener('click', ()=>{
+          insertHtmlAtCursor(`${item}`);
+          onUserChange();
+          qs('#emojiPanel').style.display = 'none';
+        });
+        grid.appendChild(button);
+      });
+    }
+
     qs('#emojiBtn').addEventListener('click', ()=>{
-      const value = prompt('Escribe o pega un emoji para insertarlo:');
-      if(!value) return;
-      insertHtmlAtCursor(`${value} `);
-      onUserChange();
+      const panel = qs('#emojiPanel');
+      panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
     });
 
     qs('#applyHighlight').addEventListener('click', ()=>{
@@ -3947,10 +4030,23 @@
       }
     });
 
-    async function deleteCollectionDocs(path){
+    async function deleteNotesByUserId(userId){
       const firestoreDb = getFirebaseFirestoreDb();
-      const snapshot = await getDocs(collection(firestoreDb, ...path));
-      await Promise.all(snapshot.docs.map(item=>deleteDoc(item.ref)));
+      const notesQuery = query(collection(firestoreDb, 'notes'), where('uid', '==', userId));
+      const snapshot = await getDocs(notesQuery);
+      if(snapshot.empty) return;
+      const batch = writeBatch(firestoreDb);
+      snapshot.docs.forEach(item=>batch.delete(item.ref));
+      await batch.commit();
+    }
+
+    async function tryReauthenticate(authUser){
+      if(!authUser?.email) return false;
+      const password = prompt('Para eliminar tu cuenta, confirma tu contraseña:');
+      if(!password) return false;
+      const credential = EmailAuthProvider.credential(authUser.email, password);
+      await reauthenticateWithCredential(authUser, credential);
+      return true;
     }
 
     async function deleteCurrentUserAccount(){
@@ -3958,27 +4054,49 @@
       const confirmed = confirm('¿Estás seguro de eliminar tu cuenta? Esta acción no se puede deshacer.');
       if(!confirmed) return;
 
+      const auth = getFirebaseAuthInstance();
+      const authUser = auth.currentUser;
+      if(!authUser){
+        console.error('No hay sesión activa para eliminar.');
+        return;
+      }
+
       try {
-        await deleteCollectionDocs(['users', currentUser.id, 'notes']);
-        await deleteCollectionDocs(['users', currentUser.id, 'trash']);
-        const auth = getFirebaseAuthInstance();
-        const authUser = auth.currentUser;
-        if(!authUser) throw new Error('No hay sesión activa para eliminar.');
+        await deleteNotesByUserId(currentUser.id);
+        await deleteDoc(doc(getFirebaseFirestoreDb(), 'userStates', currentUser.id)).catch(()=>{});
         await deleteUser(authUser);
-        showToast('Cuenta eliminada correctamente');
-        await clearSession({ silent:true });
       } catch(error){
-        console.error('Error al eliminar cuenta:', error);
         if(error?.code === 'auth/requires-recent-login'){
-          showToast('Por seguridad, vuelve a iniciar sesión y reintenta eliminar tu cuenta.');
+          try {
+            const reauthenticated = await tryReauthenticate(authUser);
+            if(!reauthenticated) return;
+            await deleteNotesByUserId(currentUser.id);
+            await deleteDoc(doc(getFirebaseFirestoreDb(), 'userStates', currentUser.id)).catch(()=>{});
+            await deleteUser(authUser);
+          } catch(secondError){
+            console.error('Error al eliminar cuenta:', secondError);
+            return;
+          }
+        } else {
+          console.error('Error al eliminar cuenta:', error);
           return;
         }
-        showToast('No se pudo eliminar la cuenta. Intenta nuevamente.');
       }
+
+      alert('Cuenta eliminada exitosamente');
+      window.location.replace('login.html');
     }
 
     qs('#deleteAccountBtn').addEventListener('click', async ()=>{
       await deleteCurrentUserAccount();
+    });
+
+    renderEmojiGrid();
+    document.addEventListener('click', (event)=>{
+      const panel = qs('#emojiPanel');
+      if(!panel) return;
+      if(event.target.closest('#emojiBtn') || event.target.closest('#emojiPanel')) return;
+      panel.style.display = 'none';
     });
 
     // --- Utility: close overlays when clicking outside modal content ---
