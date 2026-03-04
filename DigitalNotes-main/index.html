@@ -1983,7 +1983,7 @@
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
     import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, deleteUser } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, addDoc, updateDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -2778,8 +2778,6 @@
     let currentFontFamily = '';
     let noteSaveInFlight = null;
     let pendingNoteSave = false;
-    let autosaveDebounceTimer = null;
-    const AUTOSAVE_DEBOUNCE_MS = 1500;
     let editorVisualState = {
       backgroundColor: null,
       textColor: null,
@@ -2869,7 +2867,6 @@
       qs('#editor').focus();
     }
     function closeEditor(){
-      clearTimeout(autosaveDebounceTimer);
       setRecentSaveIndicator('');
       qs('#overlayEditor').style.display='none';
       editingNote=null;
@@ -3039,17 +3036,10 @@
     function onUserChange(){
       if(qs('#overlayEditor').style.display !== 'flex') return;
       if(buildEditorSnapshot() === editorLastSavedSnapshot){
-        clearTimeout(autosaveDebounceTimer);
         setRecentSaveIndicator('');
         return;
       }
       setRecentSaveIndicator('Cambios sin guardar');
-      clearTimeout(autosaveDebounceTimer);
-      autosaveDebounceTimer = setTimeout(()=>{
-        saveCurrentNote({ shouldClose:false, throwOnError:false }).catch(error=>{
-          console.error('Error en autosave:', error);
-        });
-      }, AUTOSAVE_DEBOUNCE_MS);
     }
 
 
@@ -3067,7 +3057,6 @@
     });
 
     async function saveCurrentNote({ shouldClose=false, throwOnError=false } = {}){
-      clearTimeout(autosaveDebounceTimer);
       if(noteSaveInFlight){
         pendingNoteSave = true;
         await noteSaveInFlight;
@@ -3087,8 +3076,8 @@
       const run = async ()=>{
         setRecentSaveIndicator('Guardando...');
         const now = Date.now();
-        const isNewNote = !editingNote?.id;
-        const noteId = editingNote?.id || null;
+        const isNewNote = !editingNote;
+        const noteId = editingNote?.id || generateId();
         const createdAt = editingNote?.created || editingNote?.createdAt || now;
         const fullNotePayload = {
           ...buildNotePayloadForSave(noteId, createdAt),
@@ -3108,45 +3097,22 @@
 
         if(currentUser){
           const firestoreDb = getFirebaseFirestoreDb();
-          const notesCollectionRef = collection(firestoreDb, 'users', currentUser.id, 'notes');
-          const firestorePayload = {
-            userId: currentUser.id,
-            title: fullNotePayload.title,
-            content: fullNotePayload.content,
-            createdAt: fullNotePayload.createdAt,
-            updatedAt: now,
-            estado: 'activa',
-            ...fullNotePayload,
-            titulo: fullNotePayload.title,
-            contenido: fullNotePayload.content,
-            updated: now
-          };
+          const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
           try {
-            if(isNewNote){
-              const createdRef = await addDoc(notesCollectionRef, {
-                ...firestorePayload,
-                createdAt: now,
-                updatedAt: now
-              });
-              Object.assign(editingNote, { id: createdRef.id });
-            } else {
-              const noteRef = doc(firestoreDb, 'users', currentUser.id, 'notes', editingNote.id);
-              await updateDoc(noteRef, firestorePayload);
-            }
+            await setDoc(noteRef, {
+              ...fullNotePayload,
+              titulo: fullNotePayload.title,
+              contenido: fullNotePayload.content,
+              estado: 'activa',
+              createdAt: isNewNote ? serverTimestamp() : editingNote.createdAt || serverTimestamp(),
+              updatedAt: serverTimestamp()
+            }, { merge:true });
           } catch(error){
             console.error('Error al sincronizar nota en Firestore, se conserva guardado local:', error);
             if(throwOnError) throw error;
           }
-        } else if(isNewNote){
-          Object.assign(editingNote, { id: editingNote.id || generateId() });
         }
 
-        editingNote.userId = currentUser?.id || editingNote.userId || null;
-        editingNote.estado = 'activa';
-        editingNote.createdAt = createdAt;
-        editingNote.updatedAt = now;
-        editingNote.updated = now;
-        state.notes = state.notes.filter(note=>note.id!==editingNote.id || note===editingNote);
         await saveState({ throwOnError });
         editorLastSavedSnapshot = buildEditorSnapshot();
         renderNotes();
