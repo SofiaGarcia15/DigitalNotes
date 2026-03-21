@@ -133,6 +133,37 @@
 
     .save-indicator.visible{opacity:1;}
 
+    .quick-note-panel{
+      display:grid;
+      gap:12px;
+      margin:0 0 16px;
+      padding:16px;
+      border-radius:16px;
+      background:rgba(255,255,255,0.72);
+      border:1px solid var(--border);
+      box-shadow:0 10px 24px rgba(0,0,0,0.06);
+    }
+
+    .quick-note-panel textarea{
+      width:100%;
+      min-height:120px;
+      resize:vertical;
+      padding:14px;
+      border-radius:14px;
+      border:1px solid var(--border);
+      background:var(--input-bg);
+      color:var(--text);
+      font:inherit;
+    }
+
+    .quick-note-actions{
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+
     .controls{
       display:flex;
       gap:12px;
@@ -1589,6 +1620,14 @@
         <h1 class="section">Notas recientes</h1>
         <span id="recentSaveIndicator" class="save-indicator" aria-live="polite"></span>
       </div>
+      <div class="quick-note-panel">
+        <label for="quickNoteInput" style="font-weight:700;color:var(--heading)">Escribe una nota rápida</label>
+        <textarea id="quickNoteInput" placeholder="Escribe aquí tu nota y guárdala para verla en Notas recientes..."></textarea>
+        <div class="quick-note-actions">
+          <span style="color:var(--muted);font-size:13px">Cada nota nueva se guarda automáticamente con estado <strong>reciente</strong>.</span>
+          <button class="btn" id="saveQuickNote" type="button">Guardar nota</button>
+        </div>
+      </div>
       <div class="controls">
         <label>Filtrar por libreta:
           <select id="filterNotebook"><option value="all">Todas</option></select>
@@ -2091,7 +2130,7 @@
         ...note,
         titulo: note.title || '',
         contenido: note.content || '',
-        estado: 'activa',
+        estado: 'reciente',
         deleted: false,
         notebookId: note.notebookId || note.notebook || null,
         notebook: note.notebookId || note.notebook || null,
@@ -2114,7 +2153,7 @@
       const resolvedNotebookId = note.notebookId || note.notebook || fallbackNotebookId;
       const hasDeletedFlag = typeof note.deleted === 'boolean';
       const isDeleted = hasDeletedFlag ? note.deleted : Boolean(note.deletedAt);
-      const normalizedStatus = note.estado || note.status || (isDeleted ? 'papelera' : 'activa');
+      const normalizedStatus = note.estado || note.status || (isDeleted ? 'papelera' : 'reciente');
       return {
         id: note.id || generateId(),
         title: note.title || '',
@@ -2137,7 +2176,7 @@
     }
 
     function ensureDistinctCollections(nextState){
-      nextState.notes = nextState.notes.filter(note=>note.estado !== 'papelera' && !note.deleted);
+      nextState.notes = nextState.notes.filter(note=>note.estado === 'reciente' && !note.deleted);
       nextState.trash = nextState.trash.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now() }));
       const trashIds = new Set(nextState.trash.map(note=>note.id));
       nextState.notes = nextState.notes.filter(note=>!trashIds.has(note.id));
@@ -2729,7 +2768,59 @@
       }
     }
 
+    async function createQuickNote(){
+      const input = qs('#quickNoteInput');
+      const rawContent = input.value.trim();
+      if(!rawContent){
+        showToast('Escribe una nota antes de guardarla');
+        input.focus();
+        return;
+      }
+      const now = Date.now();
+      const notebookId = state.notebooks[0]?.id || generateId();
+      const quickNote = {
+        id: generateId(),
+        title: rawContent.split(/\n/)[0].slice(0, 48),
+        content: `<p>${rawContent.replace(/[&<>"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char])).replace(/\n/g, '</p><p>')}</p>`,
+        notebookId,
+        notebook: notebookId,
+        images: [],
+        created: now,
+        updated: now,
+        createdAt: now,
+        updatedAt: now,
+        estado: 'reciente',
+        deleted: false
+      };
+      state.notes.unshift(quickNote);
+      ensureDistinctCollections(state);
+      if(currentUser){
+        const firestoreDb = getFirebaseFirestoreDb();
+        await setDoc(doc(firestoreDb, 'users', currentUser.id, 'notes', quickNote.id), {
+          ...quickNote,
+          titulo: quickNote.title,
+          contenido: quickNote.content,
+          estado: 'reciente',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }, { merge:true });
+      }
+      await saveState({ throwOnError:true });
+      renderNotes();
+      refreshNotebookWorkspace();
+      input.value = '';
+      setRecentSaveIndicator('Nota guardada en recientes');
+      showToast('Nota guardada en recientes');
+    }
+
     // --- Events and UI wiring ---
+    qs('#saveQuickNote').addEventListener('click', ()=>createQuickNote());
+    qs('#quickNoteInput').addEventListener('keydown', e=>{
+      if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){
+        e.preventDefault();
+        createQuickNote();
+      }
+    });
     qs('#filterNotebook').addEventListener('change', renderNotes);
     qs('#searchInput').addEventListener('input', renderNotes);
     qs('#closeEditor').addEventListener('click', ()=>closeEditor());
@@ -2823,7 +2914,7 @@
         updated: now,
         createdAt: createdAt,
         updatedAt: now,
-        estado: 'activa',
+        estado: 'reciente',
         deleted: false
       };
     }
@@ -3081,7 +3172,7 @@
         const createdAt = editingNote?.created || editingNote?.createdAt || now;
         const fullNotePayload = {
           ...buildNotePayloadForSave(noteId, createdAt),
-          estado:'activa',
+          estado:'reciente',
           deleted:false
         };
 
@@ -3103,7 +3194,7 @@
               ...fullNotePayload,
               titulo: fullNotePayload.title,
               contenido: fullNotePayload.content,
-              estado: 'activa',
+              estado: 'reciente',
               createdAt: isNewNote ? serverTimestamp() : editingNote.createdAt || serverTimestamp(),
               updatedAt: serverTimestamp()
             }, { merge:true });
@@ -3118,7 +3209,7 @@
         renderNotes();
         refreshNotebookWorkspace();
         setRecentSaveIndicator('Guardado correctamente');
-        showToast('Guardado correctamente');
+        showToast(isNewNote ? 'Nota guardada en recientes' : 'Guardado correctamente');
         if(shouldClose){ editingNote=null; closeEditor(); }
       };
 
@@ -3206,7 +3297,7 @@
       const note = state.trash.find(n=>n.id===noteId);
       if(!note) return;
       state.trash = state.trash.filter(n=>n.id!==noteId);
-      const restored = { ...note, estado:'activa', deleted:false };
+      const restored = { ...note, estado:'reciente', deleted:false };
       delete restored.deletedAt;
       if(!state.notebooks.some(nb=>nb.id===restored.notebookId)){
         restored.notebookId = state.notebooks[0]?.id;
@@ -3252,7 +3343,7 @@
         const body = document.createElement('div'); body.className='note-body preview'; body.textContent = truncate(stripHtml(n.content), 250);
         const meta = document.createElement('div');
         meta.className='note-meta';
-        meta.textContent = `Eliminada: ${new Date(n.deletedAt || n.updated || Date.now()).toLocaleString(getLocaleTag())}`;
+        meta.textContent = `Estado: papelera · Eliminada: ${new Date(n.deletedAt || n.updated || Date.now()).toLocaleString(getLocaleTag())}`;
         const actions = document.createElement('div');
         actions.style.display = 'flex';
         actions.style.gap = '8px';
@@ -3955,12 +4046,21 @@
 
     async function deleteCurrentUserAccount(){
       if(!currentUser) return;
-      const confirmed = confirm('¿Estás seguro de eliminar tu cuenta? Esta acción no se puede deshacer.');
+      const confirmed = confirm('¿Estás seguro de eliminar tu cuenta? Se borrarán todas tus notas y el sistema quedará como nuevo.');
       if(!confirmed) return;
 
       try {
+        stopNotesSync();
         await deleteCollectionDocs(['users', currentUser.id, 'notes']);
         await deleteCollectionDocs(['users', currentUser.id, 'trash']);
+        await deleteDoc(doc(getFirebaseFirestoreDb(), 'users', currentUser.id)).catch(()=>{});
+        await deleteDoc(doc(getFirebaseFirestoreDb(), 'notes', currentUser.id)).catch(()=>{});
+        state = getDefaultState();
+        renderNotebooks();
+        renderNotes();
+        renderTrash();
+        refreshNotebookWorkspace();
+        qs('#quickNoteInput').value = '';
         const auth = getFirebaseAuthInstance();
         const authUser = auth.currentUser;
         if(!authUser) throw new Error('No hay sesión activa para eliminar.');
