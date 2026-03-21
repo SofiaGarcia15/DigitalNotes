@@ -1592,14 +1592,13 @@
 
     <div class="nav-right">
       <nav class="nav-links">
-        <a href="#" data-view="notes">Notas recientes</a>
         <a href="#" data-view="cuadernos">Mis cuadernos</a>
         <a href="#" data-view="papelera">Papelera</a>
       </nav>
 
       <input class="search" placeholder="Buscar..." id="searchInput" />
 
-      <button class="btn" id="openQuickAdd">+ Agregar Nota</button>
+      <button class="btn" id="openQuickAdd">+</button>
       <div class="export-import-group">
         <button class="btn" id="exportBtn">Exportar</button>
         <label class="btn" id="importLabel">
@@ -1615,21 +1614,13 @@
   </header>
 
   <main>
-    <section id="view-notes">
+    <section id="view-notes" style="display:none">
       <div class="section-row">
-        <h1 class="section">Notas recientes</h1>
+        <h1 class="section">Notas activas</h1>
         <span id="recentSaveIndicator" class="save-indicator" aria-live="polite"></span>
       </div>
-      <div class="quick-note-panel">
-        <label for="quickNoteInput" style="font-weight:700;color:var(--heading)">Escribe una nota rápida</label>
-        <textarea id="quickNoteInput" placeholder="Escribe aquí tu nota y guárdala para verla en Notas recientes..."></textarea>
-        <div class="quick-note-actions">
-          <span style="color:var(--muted);font-size:13px">Cada nota nueva se guarda automáticamente con estado <strong>reciente</strong>.</span>
-          <button class="btn" id="saveQuickNote" type="button">Guardar nota</button>
-        </div>
-      </div>
       <div class="controls">
-        <label>Filtrar por libreta:
+        <label>Filtrar por cuaderno:
           <select id="filterNotebook"><option value="all">Todas</option></select>
         </label>
       </div>
@@ -1652,7 +1643,7 @@
         <div class="notebook-workspace-title-wrap">
           <button id="closeNotebookView" class="btn" style="background:#ddd">⟵ Volver a cuadernos</button>
           <h3 id="notebookViewTitle" style="margin:0">Página del cuaderno</h3>
-          <p id="notebookViewSubtitle" style="margin:0;color:var(--muted)">Aquí verás las notas recientes de este cuaderno.</p>
+          <p id="notebookViewSubtitle" style="margin:0;color:var(--muted)">Aquí verás únicamente las notas activas de este cuaderno.</p>
         </div>
       </div>
       <div class="notebook-mode-panel">
@@ -1917,10 +1908,10 @@
       <h3>👋 Bienvenido/a a Digital Notes</h3>
       <p>Mini tutorial rápido de herramientas:</p>
       <ol class="tutorial-steps">
-        <li><strong>+ Agregar Nota</strong>: crea una nota nueva al instante.</li>
+        <li><strong>+</strong>: crea una nota nueva al instante.</li>
         <li><strong>Barra de formato</strong>: negrita, cursiva, listas, alineación y resaltado.</li>
-        <li><strong>🎨 Fondo</strong>: cambia el color de la nota y se verá igual en recientes y cuadernos.</li>
-        <li><strong>🖼️ Imagen</strong>: inserta fotos en la nota para ver miniatura en notas recientes.</li>
+        <li><strong>🎨 Fondo</strong>: cambia el color de la nota y se verá igual en activas y cuadernos.</li>
+        <li><strong>🖼️ Imagen</strong>: inserta fotos en la nota para ver miniatura en notas activas.</li>
         <li><strong>Mis cuadernos</strong>: organiza tus notas por categoría y ábrelas en Modo Libreta.</li>
         <li><strong>Exportar/Importar</strong>: respalda y restaura todo tu contenido.</li>
       </ol>
@@ -2020,9 +2011,9 @@
   </template>
 
   <script type="module">
-    import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, deleteUser } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, setDoc, doc, serverTimestamp, collection, query, where, orderBy, onSnapshot, deleteDoc, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js';
+    import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, deleteUser, EmailAuthProvider, reauthenticateWithCredential } from 'https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js';
+    import { getFirestore, setDoc, doc, serverTimestamp, collection, onSnapshot, deleteDoc, getDocs } from 'https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js';
 
     /* ---------------------------
        Digital Notes 2026 - JS
@@ -2130,7 +2121,7 @@
         ...note,
         titulo: note.title || '',
         contenido: note.content || '',
-        estado: 'reciente',
+        estado: 'activa',
         deleted: false,
         notebookId: note.notebookId || note.notebook || null,
         notebook: note.notebookId || note.notebook || null,
@@ -2153,7 +2144,7 @@
       const resolvedNotebookId = note.notebookId || note.notebook || fallbackNotebookId;
       const hasDeletedFlag = typeof note.deleted === 'boolean';
       const isDeleted = hasDeletedFlag ? note.deleted : Boolean(note.deletedAt);
-      const normalizedStatus = note.estado || note.status || (isDeleted ? 'papelera' : 'reciente');
+      const normalizedStatus = note.estado || note.status || (isDeleted ? 'papelera' : 'activa');
       return {
         id: note.id || generateId(),
         title: note.title || '',
@@ -2176,7 +2167,7 @@
     }
 
     function ensureDistinctCollections(nextState){
-      nextState.notes = nextState.notes.filter(note=>note.estado === 'reciente' && !note.deleted);
+      nextState.notes = nextState.notes.filter(note=>note.estado === 'activa' && !note.deleted);
       nextState.trash = nextState.trash.map(note=>({ ...note, estado:'papelera', deleted:true, deletedAt: note.deletedAt || Date.now() }));
       const trashIds = new Set(nextState.trash.map(note=>note.id));
       nextState.notes = nextState.notes.filter(note=>!trashIds.has(note.id));
@@ -2519,7 +2510,7 @@
       const nb = state.notebooks.find(n=>n.id===notebookId);
       applyNotebookBackgroundControls(notebookId);
       qs('#notebookViewTitle').textContent = nb ? `Notas de: ${nb.name}` : 'Página del cuaderno';
-      qs('#notebookViewSubtitle').textContent = nb ? `Sección exclusiva para las notas guardadas en ${nb.name}.` : 'Aquí verás las notas recientes de este cuaderno.';
+      qs('#notebookViewSubtitle').textContent = nb ? `Sección exclusiva para las notas activas guardadas en ${nb.name}.` : 'Aquí verás únicamente las notas activas de este cuaderno.';
       const grid = qs('#notebookNotesGrid');
       qs('#view-cuadernos').style.display = 'none';
       qs('#view-notebook-notes').style.display = 'block';
@@ -2768,59 +2759,7 @@
       }
     }
 
-    async function createQuickNote(){
-      const input = qs('#quickNoteInput');
-      const rawContent = input.value.trim();
-      if(!rawContent){
-        showToast('Escribe una nota antes de guardarla');
-        input.focus();
-        return;
-      }
-      const now = Date.now();
-      const notebookId = state.notebooks[0]?.id || generateId();
-      const quickNote = {
-        id: generateId(),
-        title: rawContent.split(/\n/)[0].slice(0, 48),
-        content: `<p>${rawContent.replace(/[&<>"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char])).replace(/\n/g, '</p><p>')}</p>`,
-        notebookId,
-        notebook: notebookId,
-        images: [],
-        created: now,
-        updated: now,
-        createdAt: now,
-        updatedAt: now,
-        estado: 'reciente',
-        deleted: false
-      };
-      state.notes.unshift(quickNote);
-      ensureDistinctCollections(state);
-      if(currentUser){
-        const firestoreDb = getFirebaseFirestoreDb();
-        await setDoc(doc(firestoreDb, 'users', currentUser.id, 'notes', quickNote.id), {
-          ...quickNote,
-          titulo: quickNote.title,
-          contenido: quickNote.content,
-          estado: 'reciente',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        }, { merge:true });
-      }
-      await saveState({ throwOnError:true });
-      renderNotes();
-      refreshNotebookWorkspace();
-      input.value = '';
-      setRecentSaveIndicator('Nota guardada en recientes');
-      showToast('Nota guardada en recientes');
-    }
-
     // --- Events and UI wiring ---
-    qs('#saveQuickNote').addEventListener('click', ()=>createQuickNote());
-    qs('#quickNoteInput').addEventListener('keydown', e=>{
-      if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){
-        e.preventDefault();
-        createQuickNote();
-      }
-    });
     qs('#filterNotebook').addEventListener('change', renderNotes);
     qs('#searchInput').addEventListener('input', renderNotes);
     qs('#closeEditor').addEventListener('click', ()=>closeEditor());
@@ -2888,21 +2827,29 @@
     }
 
     function buildNotePayloadForSave(noteId, createdAt){
-      const title = qs('#noteTitle').value;
+      const title = qs('#noteTitle').value.trim();
+      const editorText = qs('#editor').innerText.trim();
       const content = qs('#editor').innerHTML;
       const notebookId = qs('#editorNotebook').value || state.notebooks[0].id;
+      const notebook = state.notebooks.find(nb=>nb.id === notebookId);
       const now = Date.now();
-      const backgroundColor = editorVisualState.backgroundColor;
+      const backgroundColor = editorVisualState.backgroundColor || notebook?.coverColor || '#fff5fa';
       const textColor = editorVisualState.textColor;
       const fontFamily = currentFontFamily || editorVisualState.fontFamily || null;
       const fontSize = getEditorFontSize();
       const images = getImagesFromHtml(content);
       return {
         id: noteId,
-        title,
+        title: title || (editorText.split(/
+/)[0] || 'Sin título'),
         content,
+        contenido: content,
+        userId: currentUser?.id || null,
         notebookId,
         notebook: notebookId,
+        cuaderno: notebook?.name || 'Sin cuaderno',
+        color: notebook?.coverColor || backgroundColor,
+        fecha: now,
         fontFamily,
         fontSize,
         textColor,
@@ -2914,7 +2861,7 @@
         updated: now,
         createdAt: createdAt,
         updatedAt: now,
-        estado: 'reciente',
+        estado: 'activa',
         deleted: false
       };
     }
@@ -2949,8 +2896,14 @@
         qs('#editor').style.fontSize = editorVisualState.fontSize || '';
         if(editorVisualState.textColor) qs('#textColorToolPicker').value = editorVisualState.textColor;
       } else {
-        qs('#colorPreview').style.background = '';
-        qs('#editor').style.background = '';
+        const selectedNotebookId = activeNotebookId || state.notebooks[0]?.id;
+        const selectedNotebook = state.notebooks.find(nb=>nb.id===selectedNotebookId) || state.notebooks[0];
+        if(selectedNotebook){
+          qs('#editorNotebook').value = selectedNotebook.id;
+          editorVisualState.backgroundColor = selectedNotebook.coverColor || '#fff5fa';
+        }
+        qs('#colorPreview').style.background = editorVisualState.backgroundColor || '';
+        qs('#editor').style.background = editorVisualState.backgroundColor || '';
         qs('#editor').style.color = '';
         qs('#editor').style.fontSize = '';
       }
@@ -2984,7 +2937,7 @@
     });
     qs('#editor').addEventListener('input', onUserChange);
     qs('#noteTitle').addEventListener('input', onUserChange);
-    qs('#editorNotebook').addEventListener('change', onUserChange);
+    qs('#editorNotebook').addEventListener('change', ()=>{ const notebook = state.notebooks.find(nb=>nb.id===qs('#editorNotebook').value); if(notebook && !editingNote){ editorVisualState.backgroundColor = notebook.coverColor || editorVisualState.backgroundColor; qs('#editor').style.background = editorVisualState.backgroundColor || ''; qs('#colorPreview').style.background = editorVisualState.backgroundColor || ''; } onUserChange(); });
 
     const editorMutationObserver = new MutationObserver(()=>onUserChange());
     editorMutationObserver.observe(qs('#editor'), { childList:true, subtree:true, characterData:true, attributes:true });
@@ -3165,6 +3118,12 @@
       }
 
       const run = async ()=>{
+        const plainText = qs('#editor').innerText.trim();
+        if(!plainText){
+          showToast('No se puede guardar una nota vacía.');
+          setRecentSaveIndicator('Escribe contenido antes de guardar');
+          return;
+        }
         setRecentSaveIndicator('Guardando...');
         const now = Date.now();
         const isNewNote = !editingNote;
@@ -3172,7 +3131,7 @@
         const createdAt = editingNote?.created || editingNote?.createdAt || now;
         const fullNotePayload = {
           ...buildNotePayloadForSave(noteId, createdAt),
-          estado:'reciente',
+          estado:'activa',
           deleted:false
         };
 
@@ -3194,7 +3153,11 @@
               ...fullNotePayload,
               titulo: fullNotePayload.title,
               contenido: fullNotePayload.content,
-              estado: 'reciente',
+              userId: currentUser.id,
+              estado: 'activa',
+              cuaderno: fullNotePayload.cuaderno,
+              color: fullNotePayload.color,
+              fecha: fullNotePayload.fecha,
               createdAt: isNewNote ? serverTimestamp() : editingNote.createdAt || serverTimestamp(),
               updatedAt: serverTimestamp()
             }, { merge:true });
@@ -3209,7 +3172,7 @@
         renderNotes();
         refreshNotebookWorkspace();
         setRecentSaveIndicator('Guardado correctamente');
-        showToast(isNewNote ? 'Nota guardada en recientes' : 'Guardado correctamente');
+        showToast(isNewNote ? 'Nota guardada en activas' : 'Guardado correctamente');
         if(shouldClose){ editingNote=null; closeEditor(); }
       };
 
@@ -3272,7 +3235,7 @@
     }
     function populateEditorNotebook(){ populateNotebookFilters(); if(editingNote) qs('#editorNotebook').value = editingNote.notebookId; }
 
-    function moveNoteToNotebook(noteId, nbId){ const note = state.notes.find(n=>n.id===noteId); if(note){ note.notebookId=nbId; note.notebook=nbId; saveState(); renderNotes(); refreshNotebookWorkspace(); } }
+    function moveNoteToNotebook(noteId, nbId){ const note = state.notes.find(n=>n.id===noteId); const notebook = state.notebooks.find(nb=>nb.id===nbId); if(note && notebook){ note.notebookId=nbId; note.notebook=nbId; note.cuaderno = notebook.name; note.color = notebook.coverColor || note.color; saveState(); renderNotes(); refreshNotebookWorkspace(); } }
 
 
     async function moveNoteToTrash(noteId){
@@ -3297,7 +3260,7 @@
       const note = state.trash.find(n=>n.id===noteId);
       if(!note) return;
       state.trash = state.trash.filter(n=>n.id!==noteId);
-      const restored = { ...note, estado:'reciente', deleted:false };
+      const restored = { ...note, estado:'activa', deleted:false };
       delete restored.deletedAt;
       if(!state.notebooks.some(nb=>nb.id===restored.notebookId)){
         restored.notebookId = state.notebooks[0]?.id;
@@ -3381,7 +3344,7 @@
     }
 
     // --- Views ---
-    let currentView = 'notes';
+    let currentView = 'cuadernos';
     function showView(view){
       currentView = view;
       qs('#view-notes').style.display=view==='notes'?'block':'none';
@@ -4046,34 +4009,53 @@
 
     async function deleteCurrentUserAccount(){
       if(!currentUser) return;
-      const confirmed = confirm('¿Estás seguro de eliminar tu cuenta? Se borrarán todas tus notas y el sistema quedará como nuevo.');
+      const confirmed = confirm('¿Estás seguro?');
       if(!confirmed) return;
 
-      try {
+      const auth = getFirebaseAuthInstance();
+      const authUser = auth.currentUser;
+      if(!authUser) {
+        showToast('No hay una sesión activa para eliminar la cuenta.');
+        return;
+      }
+
+      const performDeletion = async ()=>{
         stopNotesSync();
         await deleteCollectionDocs(['users', currentUser.id, 'notes']);
         await deleteCollectionDocs(['users', currentUser.id, 'trash']);
         await deleteDoc(doc(getFirebaseFirestoreDb(), 'users', currentUser.id)).catch(()=>{});
         await deleteDoc(doc(getFirebaseFirestoreDb(), 'notes', currentUser.id)).catch(()=>{});
+        await deleteUser(auth.currentUser);
         state = getDefaultState();
         renderNotebooks();
         renderNotes();
         renderTrash();
         refreshNotebookWorkspace();
-        qs('#quickNoteInput').value = '';
-        const auth = getFirebaseAuthInstance();
-        const authUser = auth.currentUser;
-        if(!authUser) throw new Error('No hay sesión activa para eliminar.');
-        await deleteUser(authUser);
-        showToast('Cuenta eliminada correctamente');
-        await clearSession({ silent:true });
+        window.location.replace('login.html');
+      };
+
+      try {
+        await performDeletion();
       } catch(error){
         console.error('Error al eliminar cuenta:', error);
         if(error?.code === 'auth/requires-recent-login'){
-          showToast('Por seguridad, vuelve a iniciar sesión y reintenta eliminar tu cuenta.');
-          return;
+          const password = prompt('Para eliminar tu cuenta, vuelve a ingresar tu contraseña.');
+          if(!password){
+            showToast('Se requiere reautenticación para eliminar la cuenta.');
+            return;
+          }
+          try {
+            const credential = EmailAuthProvider.credential(authUser.email, password);
+            await reauthenticateWithCredential(authUser, credential);
+            await performDeletion();
+            return;
+          } catch(reauthError){
+            console.error('Error de reautenticación:', reauthError);
+            showToast('No se pudo reautenticar la cuenta. Verifica tu contraseña e inténtalo de nuevo.');
+            return;
+          }
         }
-        showToast('No se pudo eliminar la cuenta. Intenta nuevamente.');
+        showToast('No se pudo eliminar la cuenta completa. Intenta nuevamente.');
       }
     }
 
@@ -4121,7 +4103,7 @@
       renderNotes();
       renderTemplateGallery();
       renderTrash();
-      showView('notes');
+      showView('cuadernos');
       populateEditorNotebook();
       renderCompactPalette();
       maybeShowOnboarding();
